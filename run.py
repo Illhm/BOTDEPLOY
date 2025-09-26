@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 # Variabel Lingkungan
 API_ID = os.getenv("API_ID", "961780")
 API_HASH = os.getenv("API_HASH", "bbbfa43f067e1e8e2fb41f334d32a6a7")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "6486689995:AAH3eB3qzEnmQOsDIGtuBOQN-5IQovpqXsQ")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7692879400:AAHFudG4UrrulrQFJqSsE3P9r4yxFDhz1jk")
 
 # Inisialisasi bot Telegram
 app = Client("deploy_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
