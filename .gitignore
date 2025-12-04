@@ -2,10 +2,8 @@
 # Bot Deploy Manager - Git Ignore Rules
 # ============================================================================
 
-# Environment Variables (CRITICAL - Never commit credentials!)
-.env
-.env.local
-.env.*.local
+# Configuration Files (CRITICAL - Never commit credentials!)
+config.py
 
 # Python
 __pycache__/
@@ -70,5 +68,5 @@ process_*.log
 .coverage
 htmlcov/
 
-# Docker
-.dockerignore
+# OS
+Thumbs.db
