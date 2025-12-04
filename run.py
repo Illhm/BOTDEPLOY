@@ -718,13 +718,56 @@ app = Client(
 process_manager.set_bot_client(app)
 
 
+def _parse_allowed_users(raw_value) -> List[int]:
+    """Normalize ALLOWED_USERS to a list of integers."""
+
+    if raw_value in (None, False):
+        return []
+
+    # Already a list or tuple: coerce each element to int when possible
+    if isinstance(raw_value, (list, tuple, set)):
+        parsed = []
+        for user in raw_value:
+            try:
+                parsed.append(int(user))
+            except (TypeError, ValueError):
+                logger.warning("Ignoring invalid user id in ALLOWED_USERS: %s", user)
+        return parsed
+
+    # String input (e.g., environment variable or misconfigured value)
+    if isinstance(raw_value, str):
+        # Support both comma-separated numbers and bracketed lists
+        cleaned = raw_value.strip().strip("[]")
+        if not cleaned:
+            return []
+
+        parsed = []
+        for user in cleaned.split(','):
+            user = user.strip().strip("'\"")
+            if not user:
+                continue
+            try:
+                parsed.append(int(user))
+            except ValueError:
+                logger.warning("Ignoring invalid user id in ALLOWED_USERS: %s", user)
+        return parsed
+
+    logger.warning("Unsupported ALLOWED_USERS type: %s", type(raw_value))
+    return []
+
+
 def is_authorized(message: Message) -> bool:
-    """Check if user is authorized to use bot"""
-    allowed_users = getattr(config, 'ALLOWED_USERS', [])
-    
+    """Check if user is authorized to use bot."""
+
+    if not getattr(message, "from_user", None):
+        logger.warning("Received message without from_user; rejecting for safety")
+        return False
+
+    allowed_users = _parse_allowed_users(getattr(config, 'ALLOWED_USERS', []))
+
     if not allowed_users:
         return True  # No restriction if not configured
-    
+
     return message.from_user.id in allowed_users
 
 
