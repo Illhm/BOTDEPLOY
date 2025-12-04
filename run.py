@@ -29,19 +29,64 @@ from pyrogram.types import Message
 from flask import Flask, request, jsonify
 from logging.handlers import RotatingFileHandler
 
-# Import configuration
+# Import configuration with environment variable fallback
 try:
-    import config
+    import config  # type: ignore
 except ImportError:
-    print("=" * 70)
-    print("ERROR: config.py not found!")
-    print("=" * 70)
-    print("Please create config.py from config.py.example:")
-    print("  1. Copy config.py.example to config.py")
-    print("  2. Edit config.py and fill in your credentials")
-    print("  3. Run this script again")
-    print("=" * 70)
-    sys.exit(1)
+    class EnvConfig:  # pragma: no cover - simple container for env vars
+        pass
+
+    config = EnvConfig()  # type: ignore
+
+# Override config values with environment variables when provided
+def _load_env_overrides():
+    """Load configuration values from environment variables when present."""
+
+    env_mapping = {
+        "API_ID": "API_ID",
+        "API_HASH": "API_HASH",
+        "BOT_TOKEN": "BOT_TOKEN",
+        "ALLOWED_USERS": "ALLOWED_USERS",
+        "SHUTDOWN_TOKEN": "SHUTDOWN_TOKEN",
+        "FLASK_PORT": "PORT",  # Common PaaS convention
+        "FLASK_HOST": "FLASK_HOST",
+        "MAX_PROCESSES": "MAX_PROCESSES",
+        "MONITOR_INTERVAL": "MONITOR_INTERVAL",
+        "PROCESS_TIMEOUT": "PROCESS_TIMEOUT",
+        "MAX_RESTART_ATTEMPTS": "MAX_RESTART_ATTEMPTS",
+        "TEMP_DIR": "TEMP_DIR",
+        "LOG_DIR": "LOG_DIR",
+        "MAX_LOG_SIZE": "MAX_LOG_SIZE",
+        "LOG_BACKUP_COUNT": "LOG_BACKUP_COUNT",
+        "USE_VENV": "USE_VENV",
+        "AUTO_INSTALL_DEPS": "AUTO_INSTALL_DEPS",
+        "VENV_DIR": "VENV_DIR",
+        "CLEANUP_VENV": "CLEANUP_VENV",
+    }
+
+    for attr_name, env_name in env_mapping.items():
+        env_value = os.getenv(env_name)
+        if env_value is None:
+            continue
+
+        # Simple parsing for list/integer/boolean values
+        if attr_name == "ALLOWED_USERS":
+            try:
+                parsed_users = [int(user.strip()) for user in env_value.split(",") if user.strip()]
+                setattr(config, attr_name, parsed_users)
+            except ValueError:
+                logger.warning("Invalid ALLOWED_USERS env format, expected comma-separated integers")
+            continue
+
+        if env_value.lower() in {"true", "false"}:
+            setattr(config, attr_name, env_value.lower() == "true")
+            continue
+
+        if env_value.isdigit():
+            setattr(config, attr_name, int(env_value))
+            continue
+
+        setattr(config, attr_name, env_value)
 
 
 # ============================================================================
@@ -86,6 +131,9 @@ def setup_logging():
 
 logger = setup_logging()
 
+# Apply environment variable overrides after logger is ready
+_load_env_overrides()
+
 
 # ============================================================================
 # CONFIGURATION VALIDATION
@@ -94,7 +142,7 @@ logger = setup_logging()
 def validate_config():
     """Validate required configuration parameters"""
     errors = []
-    
+
     # Required fields
     required_fields = {
         'API_ID': 'Telegram API ID',
@@ -107,6 +155,12 @@ def validate_config():
         if not value or str(value).startswith('YOUR_'):
             errors.append(f"{description} ({field}) is not configured")
     
+    # Ensure API_ID is an integer (Pyrogram requirement)
+    try:
+        config.API_ID = int(getattr(config, 'API_ID'))
+    except (TypeError, ValueError):
+        errors.append("Telegram API ID (API_ID) must be an integer")
+
     if errors:
         logger.error("Configuration validation failed:")
         for error in errors:
