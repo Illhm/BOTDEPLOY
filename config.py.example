@@ -7,11 +7,11 @@ Copy this file to config.py and fill in your credentials
 # TELEGRAM API CREDENTIALS (REQUIRED)
 # ============================================================================
 # Get these from https://my.telegram.org/apps
-API_ID = "YOUR_API_ID_HERE"  # Example: "12345678"
-API_HASH = "YOUR_API_HASH_HERE"  # Example: "0123456789abcdef0123456789abcdef"
+API_ID = "961780"  # Example: "12345678"
+API_HASH = "bbbfa43f067e1e8e2fb41f334d32a6a7"  # Example: "0123456789abcdef0123456789abcdef"
 
 # Get this from @BotFather on Telegram
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Example: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+BOT_TOKEN = "6486689995:AAEhCjdJsQCzlKcTFpai6Ux0GbRGqFh-gKk"  # Example: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
 
 # ============================================================================
 # SECURITY SETTINGS (OPTIONAL)
@@ -19,7 +19,7 @@ BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Example: "123456789:ABCdefGHIjklMNOpqrsTUVw
 # Whitelist of Telegram user IDs allowed to use the bot
 # Leave empty list [] to allow all users (NOT RECOMMENDED for production)
 # Get your user ID from @userinfobot on Telegram
-ALLOWED_USERS = []  # Example: [123456789, 987654321]
+ALLOWED_USERS = [1022358547]  # Example: [123456789, 987654321]
 
 # Token for shutdown endpoint authentication
 # Generate with: import secrets; secrets.token_urlsafe(32)
