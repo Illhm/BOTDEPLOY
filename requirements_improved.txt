@@ -1,0 +1,31 @@
+# ============================================================================
+# Bot Deploy Manager - Python Dependencies
+# ============================================================================
+
+# Core Telegram Bot Framework
+pyrogram==2.0.106
+tgcrypto==1.2.5  # Recommended for better performance with Pyrogram
+
+# Web Framework
+flask==3.0.0
+werkzeug==3.0.1
+
+# HTTP Client
+requests==2.32.3
+
+# Async Support
+uvloop==0.19.0; sys_platform != 'win32'  # Better async performance on Unix
+
+# Direct Link Generator Dependencies (if needed)
+cloudscraper==1.2.71
+beautifulsoup4==4.12.2
+lxml==5.0.0
+
+# Utilities
+python-dotenv==1.0.0  # For .env file support
+
+# Optional: Google Drive Integration (uncomment if needed)
+# google-auth==2.25.2
+# google-auth-oauthlib==1.2.0
+# google-auth-httplib2==0.2.0
+# google-api-python-client==2.110.0
