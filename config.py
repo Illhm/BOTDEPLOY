@@ -19,7 +19,7 @@ BOT_TOKEN = "6486689995:AAEhCjdJsQCzlKcTFpai6Ux0GbRGqFh-gKk"  # Example: "123456
 # Whitelist of Telegram user IDs allowed to use the bot
 # Leave empty list [] to allow all users (NOT RECOMMENDED for production)
 # Get your user ID from @userinfobot on Telegram
-ALLOWED_USERS = [1022358547]  # Example: [123456789, 987654321]
+ALLOWED_USERS = []  # Example: [123456789, 987654321]
 
 # Token for shutdown endpoint authentication
 # Generate with: import secrets; secrets.token_urlsafe(32)
