@@ -11,7 +11,7 @@ API_ID = "961780" # Example: "12345678"
 API_HASH = "bbbfa43f067e1e8e2fb41f334d32a6a7"  # Example: "0123456789abcdef0123456789abcdef"
 
 # Get this from @BotFather on Telegram
-BOT_TOKEN = "5219568853:AAErvCryVk9ChIt_MG90EIXhk8i9hgNgiwI-"  # Example: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+BOT_TOKEN = "5219568853:AAEIKpEFxdCYcE8n0UC9hp29mJ7e_q7MTgc"  # Example: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
 
 # ============================================================================
 # SECURITY SETTINGS (OPTIONAL)
