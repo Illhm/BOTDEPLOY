@@ -49,11 +49,15 @@ pip install -r requirements.txt
 ### 3. Konfigurasi
 
 ```bash
-# Copy template konfigurasi
+# Opsi A: gunakan file config
 cp config.py.example config.py
-
-# Edit dengan credentials Anda
 nano config.py
+
+# Opsi B: gunakan environment variables (cocok untuk Zeabur/railway)
+export API_ID=12345678
+export API_HASH=0123456789abcdef0123456789abcdef
+export BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+export PORT=8080  # override port Flask jika platform mewajibkan
 ```
 
 **Konfigurasi Wajib di config.py:**
