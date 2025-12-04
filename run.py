@@ -2,21 +2,24 @@
 Bot Deploy Manager v2.0 - Professional Edition
 
 A Telegram bot for deploying and managing Python scripts remotely.
-Features: Process monitoring, auto-restart, logging, and web API.
+Features: Process monitoring, auto-restart, logging, dependency management, and web API.
 
 Author: Bot Deploy Manager Team
-Version: 2.0.0
+Version: 2.1.0
 License: MIT
 """
 
 import os
 import sys
+import re
+import ast
 import asyncio
 import logging
 import tempfile
 import subprocess
+import venv
 from threading import Thread, Lock
-from typing import Dict, Optional
+from typing import Dict, Optional, Set, List
 from datetime import datetime
 from pathlib import Path
 
@@ -114,8 +117,11 @@ def validate_config():
     # Create directories
     temp_dir = Path(getattr(config, 'TEMP_DIR', '/tmp/botdeploy'))
     log_dir = Path(getattr(config, 'LOG_DIR', './logs'))
+    venv_dir = Path(getattr(config, 'VENV_DIR', './venvs'))
+    
     temp_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+    venv_dir.mkdir(parents=True, exist_ok=True)
     
     logger.info("Configuration validated successfully")
 
@@ -129,6 +135,164 @@ except ValueError as e:
 
 
 # ============================================================================
+# DEPENDENCY MANAGER
+# ============================================================================
+
+class DependencyManager:
+    """Manage dependencies for deployed scripts"""
+    
+    # Standard library modules (no need to install)
+    STDLIB_MODULES = {
+        'abc', 'aifc', 'argparse', 'array', 'ast', 'asynchat', 'asyncio', 'asyncore',
+        'atexit', 'audioop', 'base64', 'bdb', 'binascii', 'binhex', 'bisect', 'builtins',
+        'bz2', 'calendar', 'cgi', 'cgitb', 'chunk', 'cmath', 'cmd', 'code', 'codecs',
+        'codeop', 'collections', 'colorsys', 'compileall', 'concurrent', 'configparser',
+        'contextlib', 'copy', 'copyreg', 'cProfile', 'crypt', 'csv', 'ctypes', 'curses',
+        'dataclasses', 'datetime', 'dbm', 'decimal', 'difflib', 'dis', 'distutils', 'doctest',
+        'email', 'encodings', 'enum', 'errno', 'faulthandler', 'fcntl', 'filecmp', 'fileinput',
+        'fnmatch', 'formatter', 'fractions', 'ftplib', 'functools', 'gc', 'getopt', 'getpass',
+        'gettext', 'glob', 'grp', 'gzip', 'hashlib', 'heapq', 'hmac', 'html', 'http', 'imaplib',
+        'imghdr', 'imp', 'importlib', 'inspect', 'io', 'ipaddress', 'itertools', 'json', 'keyword',
+        'lib2to3', 'linecache', 'locale', 'logging', 'lzma', 'mailbox', 'mailcap', 'marshal',
+        'math', 'mimetypes', 'mmap', 'modulefinder', 'multiprocessing', 'netrc', 'nis', 'nntplib',
+        'numbers', 'operator', 'optparse', 'os', 'ossaudiodev', 'parser', 'pathlib', 'pdb',
+        'pickle', 'pickletools', 'pipes', 'pkgutil', 'platform', 'plistlib', 'poplib', 'posix',
+        'posixpath', 'pprint', 'profile', 'pstats', 'pty', 'pwd', 'py_compile', 'pyclbr', 'pydoc',
+        'queue', 'quopri', 'random', 're', 'readline', 'reprlib', 'resource', 'rlcompleter',
+        'runpy', 'sched', 'secrets', 'select', 'selectors', 'shelve', 'shlex', 'shutil', 'signal',
+        'site', 'smtpd', 'smtplib', 'sndhdr', 'socket', 'socketserver', 'spwd', 'sqlite3', 'ssl',
+        'stat', 'statistics', 'string', 'stringprep', 'struct', 'subprocess', 'sunau', 'symbol',
+        'symtable', 'sys', 'sysconfig', 'syslog', 'tabnanny', 'tarfile', 'telnetlib', 'tempfile',
+        'termios', 'test', 'textwrap', 'threading', 'time', 'timeit', 'tkinter', 'token',
+        'tokenize', 'trace', 'traceback', 'tracemalloc', 'tty', 'turtle', 'turtledemo', 'types',
+        'typing', 'unicodedata', 'unittest', 'urllib', 'uu', 'uuid', 'venv', 'warnings', 'wave',
+        'weakref', 'webbrowser', 'winreg', 'winsound', 'wsgiref', 'xdrlib', 'xml', 'xmlrpc',
+        'zipapp', 'zipfile', 'zipimport', 'zlib', '_thread'
+    }
+    
+    @staticmethod
+    def extract_imports(script_path: Path) -> Set[str]:
+        """Extract all import statements from a Python script"""
+        imports = set()
+        
+        try:
+            with open(script_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            # Parse AST
+            try:
+                tree = ast.parse(content)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            imports.add(alias.name.split('.')[0])
+                    elif isinstance(node, ast.ImportFrom):
+                        if node.module:
+                            imports.add(node.module.split('.')[0])
+            except SyntaxError:
+                logger.warning(f"Syntax error in {script_path}, falling back to regex")
+                # Fallback to regex
+                import_pattern = r'^\s*(?:from\s+(\S+)|import\s+(\S+))'
+                for match in re.finditer(import_pattern, content, re.MULTILINE):
+                    module = match.group(1) or match.group(2)
+                    imports.add(module.split('.')[0].split(' ')[0])
+            
+            # Filter out standard library
+            external_imports = imports - DependencyManager.STDLIB_MODULES
+            
+            logger.debug(f"Found imports: {external_imports}")
+            return external_imports
+            
+        except Exception as e:
+            logger.error(f"Error extracting imports: {e}")
+            return set()
+    
+    @staticmethod
+    def create_venv(venv_path: Path) -> bool:
+        """Create a virtual environment"""
+        try:
+            logger.info(f"Creating virtual environment at {venv_path}")
+            venv.create(venv_path, with_pip=True, clear=True)
+            logger.info("Virtual environment created successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create venv: {e}")
+            return False
+    
+    @staticmethod
+    def install_packages(venv_path: Path, packages: List[str]) -> tuple[bool, str]:
+        """Install packages in virtual environment"""
+        if not packages:
+            return True, "No packages to install"
+        
+        pip_path = venv_path / "bin" / "pip"
+        if not pip_path.exists():
+            pip_path = venv_path / "Scripts" / "pip.exe"  # Windows
+        
+        if not pip_path.exists():
+            return False, "pip not found in venv"
+        
+        try:
+            logger.info(f"Installing packages: {packages}")
+            
+            # Install packages
+            cmd = [str(pip_path), "install", "--no-cache-dir"] + packages
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minutes timeout
+            )
+            
+            if result.returncode == 0:
+                logger.info("Packages installed successfully")
+                return True, result.stdout
+            else:
+                logger.error(f"Package installation failed: {result.stderr}")
+                return False, result.stderr
+                
+        except subprocess.TimeoutExpired:
+            return False, "Installation timeout (5 minutes)"
+        except Exception as e:
+            logger.error(f"Error installing packages: {e}")
+            return False, str(e)
+    
+    @staticmethod
+    def install_from_requirements(venv_path: Path, requirements_file: Path) -> tuple[bool, str]:
+        """Install packages from requirements.txt"""
+        pip_path = venv_path / "bin" / "pip"
+        if not pip_path.exists():
+            pip_path = venv_path / "Scripts" / "pip.exe"
+        
+        if not pip_path.exists():
+            return False, "pip not found in venv"
+        
+        try:
+            logger.info(f"Installing from requirements: {requirements_file}")
+            
+            cmd = [str(pip_path), "install", "--no-cache-dir", "-r", str(requirements_file)]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            
+            if result.returncode == 0:
+                logger.info("Requirements installed successfully")
+                return True, result.stdout
+            else:
+                logger.error(f"Requirements installation failed: {result.stderr}")
+                return False, result.stderr
+                
+        except subprocess.TimeoutExpired:
+            return False, "Installation timeout (5 minutes)"
+        except Exception as e:
+            logger.error(f"Error installing requirements: {e}")
+            return False, str(e)
+
+
+# ============================================================================
 # PROCESS INFORMATION
 # ============================================================================
 
@@ -136,16 +300,20 @@ class ProcessInfo:
     """Information about a running process"""
     
     def __init__(self, pid: int, process: subprocess.Popen, 
-                 file_path: Path, log_path: Path, chat_id: int):
+                 file_path: Path, log_path: Path, chat_id: int,
+                 venv_path: Optional[Path] = None, requirements_file: Optional[Path] = None):
         self.pid = pid
         self.process = process
         self.file_path = file_path
         self.log_path = log_path
         self.chat_id = chat_id
+        self.venv_path = venv_path
+        self.requirements_file = requirements_file
         self.created_at = datetime.now()
         self.restart_count = 0
         self.max_restarts = getattr(config, 'MAX_RESTART_ATTEMPTS', 3)
         self._status = "running"
+        self.dependencies_installed = False
     
     @property
     def status(self) -> str:
@@ -206,6 +374,18 @@ class ProcessInfo:
                 self.file_path.unlink()
                 logger.debug(f"Removed script file: {self.file_path}")
             
+            # Remove requirements file if exists
+            if self.requirements_file and self.requirements_file.exists():
+                self.requirements_file.unlink()
+                logger.debug(f"Removed requirements file: {self.requirements_file}")
+            
+            # Optionally remove venv (configurable)
+            if getattr(config, 'CLEANUP_VENV', False) and self.venv_path:
+                if self.venv_path.exists():
+                    import shutil
+                    shutil.rmtree(self.venv_path, ignore_errors=True)
+                    logger.debug(f"Removed venv: {self.venv_path}")
+            
             logger.info(f"Cleaned up process {self.pid}")
             
         except Exception as e:
@@ -224,6 +404,7 @@ class ProcessManager:
         self._lock = Lock()
         self._bot_client: Optional[Client] = None
         self._max_processes = getattr(config, 'MAX_PROCESSES', 10)
+        self._dependency_manager = DependencyManager()
     
     def set_bot_client(self, client: Client):
         """Set bot client for notifications"""
@@ -275,6 +456,65 @@ class ProcessManager:
                 process_info.cleanup()
             self._processes.clear()
         logger.info("All processes cleaned up")
+    
+    async def setup_dependencies(self, script_path: Path, requirements_file: Optional[Path] = None) -> tuple[Optional[Path], str]:
+        """Setup virtual environment and install dependencies"""
+        use_venv = getattr(config, 'USE_VENV', True)
+        auto_install = getattr(config, 'AUTO_INSTALL_DEPS', True)
+        
+        if not use_venv and not auto_install:
+            return None, "Dependency management disabled"
+        
+        # Create venv directory
+        venv_dir = Path(getattr(config, 'VENV_DIR', './venvs'))
+        timestamp = datetime.now().timestamp()
+        venv_path = venv_dir / f"venv_{timestamp}"
+        
+        messages = []
+        
+        try:
+            # Create virtual environment
+            if use_venv:
+                messages.append("📦 Creating virtual environment...")
+                if not self._dependency_manager.create_venv(venv_path):
+                    return None, "Failed to create virtual environment"
+                messages.append("✅ Virtual environment created")
+            
+            # Install from requirements.txt if provided
+            if requirements_file and requirements_file.exists():
+                messages.append(f"📥 Installing from {requirements_file.name}...")
+                success, output = self._dependency_manager.install_from_requirements(venv_path, requirements_file)
+                
+                if success:
+                    messages.append("✅ Requirements installed successfully")
+                else:
+                    messages.append(f"⚠️ Requirements installation failed:\n{output[:500]}")
+                    # Continue anyway, script might still work
+            
+            # Auto-detect and install dependencies
+            elif auto_install:
+                messages.append("🔍 Detecting dependencies...")
+                imports = self._dependency_manager.extract_imports(script_path)
+                
+                if imports:
+                    messages.append(f"📦 Found packages: {', '.join(imports)}")
+                    messages.append("⏳ Installing packages...")
+                    
+                    success, output = self._dependency_manager.install_packages(venv_path, list(imports))
+                    
+                    if success:
+                        messages.append("✅ Dependencies installed successfully")
+                    else:
+                        messages.append(f"⚠️ Some packages failed to install:\n{output[:500]}")
+                        messages.append("⚠️ Script will run with available packages")
+                else:
+                    messages.append("ℹ️ No external dependencies detected")
+            
+            return venv_path if use_venv else None, "\n".join(messages)
+            
+        except Exception as e:
+            logger.error(f"Error setting up dependencies: {e}")
+            return None, f"❌ Dependency setup failed: {str(e)}"
     
     async def monitor_processes(self):
         """Monitor all processes and handle failures"""
@@ -341,6 +581,14 @@ class ProcessManager:
         try:
             logger.info(f"Attempting to restart process {old_process.pid}")
             
+            # Determine python executable
+            if old_process.venv_path:
+                python_path = old_process.venv_path / "bin" / "python"
+                if not python_path.exists():
+                    python_path = old_process.venv_path / "Scripts" / "python.exe"
+            else:
+                python_path = sys.executable
+            
             # Append restart marker to log
             with open(old_process.log_path, "a") as log_file:
                 log_file.write(f"\n\n{'='*60}\n")
@@ -349,7 +597,7 @@ class ProcessManager:
                 
                 # Start new process
                 new_process = subprocess.Popen(
-                    ['python3', str(old_process.file_path)],
+                    [str(python_path), str(old_process.file_path)],
                     stdout=log_file,
                     stderr=log_file,
                     env=os.environ,
@@ -362,9 +610,12 @@ class ProcessManager:
                 process=new_process,
                 file_path=old_process.file_path,
                 log_path=old_process.log_path,
-                chat_id=old_process.chat_id
+                chat_id=old_process.chat_id,
+                venv_path=old_process.venv_path,
+                requirements_file=old_process.requirements_file
             )
             new_process_info.restart_count = old_process.restart_count + 1
+            new_process_info.dependencies_installed = old_process.dependencies_installed
             
             # Replace in registry
             self.remove_process(old_process.pid)
@@ -427,20 +678,22 @@ def is_authorized(message: Message) -> bool:
 async def start_command(client: Client, message: Message):
     """Handle /start command"""
     welcome_text = (
-        "👋 **Welcome to Bot Deploy Manager v2.0**\n\n"
-        "This bot allows you to deploy and manage Python scripts remotely.\n\n"
+        "👋 **Welcome to Bot Deploy Manager v2.1**\n\n"
+        "This bot allows you to deploy and manage Python scripts remotely with automatic dependency management.\n\n"
         "**Available Commands:**\n"
         "• `/deploy <url>` - Deploy script from URL\n"
         "• Send Python file - Deploy uploaded script\n"
+        "• Send requirements.txt - Upload dependencies\n"
         "• `/status` - Check all running processes\n"
         "• `/log <pid>` - Get log file for process\n"
         "• `/stop <pid>` - Stop a running process\n"
         "• `/help` - Show this help message\n\n"
         "**Features:**\n"
+        "✅ Auto-detect and install dependencies\n"
+        "✅ Virtual environment per process\n"
         "✅ Auto-restart on failure (max 3 attempts)\n"
         "✅ Real-time monitoring and notifications\n"
-        "✅ Comprehensive logging\n"
-        "✅ Process statistics\n\n"
+        "✅ Comprehensive logging\n\n"
         "⚠️ **Security Notice:**\n"
         "Only authorized users can use this bot."
     )
@@ -451,6 +704,10 @@ async def start_command(client: Client, message: Message):
 async def help_command(client: Client, message: Message):
     """Handle /help command"""
     await start_command(client, message)
+
+
+# Global storage for pending deployments (waiting for requirements.txt)
+pending_deployments: Dict[int, dict] = {}
 
 
 @app.on_message(filters.command("deploy") | filters.document)
@@ -481,10 +738,37 @@ async def deploy_command(client: Client, message: Message):
         
         # Get script file
         file_path = None
+        requirements_file = None
         temp_dir = Path(getattr(config, 'TEMP_DIR', '/tmp/botdeploy'))
         
-        if message.document and message.document.file_name.endswith(".py"):
-            # File upload
+        # Check if this is a requirements.txt upload for pending deployment
+        if message.document and message.document.file_name == "requirements.txt":
+            user_id = message.from_user.id
+            if user_id in pending_deployments:
+                await message.reply("📥 **Downloading requirements.txt...**")
+                downloaded_path = await message.download()
+                
+                timestamp = datetime.now().timestamp()
+                requirements_file = temp_dir / f"requirements_{timestamp}.txt"
+                Path(downloaded_path).rename(requirements_file)
+                
+                # Get pending deployment info
+                pending = pending_deployments.pop(user_id)
+                file_path = pending['file_path']
+                
+                await message.reply(
+                    "✅ **Requirements received!**\n\n"
+                    "Starting deployment with custom requirements..."
+                )
+            else:
+                await message.reply(
+                    "⚠️ **No Pending Deployment**\n\n"
+                    "Please deploy a Python script first, then send requirements.txt"
+                )
+                return
+        
+        # Handle Python file upload
+        elif message.document and message.document.file_name.endswith(".py"):
             await message.reply("📥 **Downloading script file...**")
             downloaded_path = await message.download()
             
@@ -492,6 +776,29 @@ async def deploy_command(client: Client, message: Message):
             timestamp = datetime.now().timestamp()
             file_path = temp_dir / f"script_{timestamp}_{message.document.file_name}"
             Path(downloaded_path).rename(file_path)
+            
+            # Ask if user wants to upload requirements.txt
+            user_id = message.from_user.id
+            pending_deployments[user_id] = {'file_path': file_path, 'timestamp': timestamp}
+            
+            await message.reply(
+                "✅ **Script received!**\n\n"
+                "📋 **Optional:** Send `requirements.txt` now for custom dependencies\n"
+                "⏭️ **Or** wait 10 seconds for auto-detection\n\n"
+                "Auto-deployment will start automatically..."
+            )
+            
+            # Wait 10 seconds for requirements.txt
+            await asyncio.sleep(10)
+            
+            # Check if requirements.txt was uploaded
+            if user_id in pending_deployments:
+                # No requirements.txt uploaded, proceed with auto-detection
+                pending_deployments.pop(user_id)
+                await message.reply("⏳ **Starting auto-deployment...**")
+            else:
+                # Requirements.txt was uploaded, already handled above
+                return
             
         elif message.command and len(message.command) > 1:
             # URL download
@@ -520,7 +827,8 @@ async def deploy_command(client: Client, message: Message):
                 "❌ **Invalid Command**\n\n"
                 "Please provide a script:\n"
                 "• Send a Python file directly, or\n"
-                "• Use `/deploy <url>` with a direct link to a Python file"
+                "• Use `/deploy <url>` with a direct link to a Python file\n\n"
+                "**Optional:** Send requirements.txt after the script for custom dependencies"
             )
             return
         
@@ -528,6 +836,21 @@ async def deploy_command(client: Client, message: Message):
         if not file_path or not file_path.exists():
             await message.reply("❌ **Failed to save script file**")
             return
+        
+        # Setup dependencies
+        setup_msg = await message.reply("⚙️ **Setting up environment...**")
+        
+        venv_path, dep_message = await process_manager.setup_dependencies(file_path, requirements_file)
+        
+        await setup_msg.edit_text(f"**Environment Setup:**\n\n{dep_message}")
+        
+        # Determine python executable
+        if venv_path:
+            python_path = venv_path / "bin" / "python"
+            if not python_path.exists():
+                python_path = venv_path / "Scripts" / "python.exe"  # Windows
+        else:
+            python_path = sys.executable
         
         # Create log file
         log_dir = Path(getattr(config, 'LOG_DIR', './logs'))
@@ -545,10 +868,12 @@ async def deploy_command(client: Client, message: Message):
             log_file.write(f"Script: {file_path.name}\n")
             log_file.write(f"User ID: {message.from_user.id}\n")
             log_file.write(f"User: @{message.from_user.username or 'N/A'}\n")
+            log_file.write(f"Python: {python_path}\n")
+            log_file.write(f"VEnv: {venv_path or 'System'}\n")
             log_file.write(f"{'='*60}\n\n")
             
             process = subprocess.Popen(
-                ['python3', str(file_path)],
+                [str(python_path), str(file_path)],
                 stdout=log_file,
                 stderr=log_file,
                 env=os.environ,
@@ -561,8 +886,11 @@ async def deploy_command(client: Client, message: Message):
             process=process,
             file_path=file_path,
             log_path=log_path,
-            chat_id=message.chat.id
+            chat_id=message.chat.id,
+            venv_path=venv_path,
+            requirements_file=requirements_file
         )
+        process_info.dependencies_installed = True
         
         # Add to manager
         if process_manager.add_process(process_info):
@@ -570,11 +898,12 @@ async def deploy_command(client: Client, message: Message):
                 f"✅ **Process Started Successfully**\n\n"
                 f"**PID:** `{process.pid}`\n"
                 f"**File:** `{file_path.name}`\n"
-                f"**Log:** `{log_path.name}`\n\n"
+                f"**Log:** `{log_path.name}`\n"
+                f"**Environment:** {'Virtual (Isolated)' if venv_path else 'System'}\n\n"
                 f"**Monitoring:** Enabled\n"
                 f"**Auto-restart:** Up to {process_info.max_restarts} attempts\n\n"
                 "Use `/status` to check process status\n"
-                "Use `/log {process.pid}` to view logs",
+                f"Use `/log {process.pid}` to view logs",
                 parse_mode="markdown"
             )
             logger.info(
@@ -621,12 +950,14 @@ async def status_command(client: Client, message: Message):
     )
     
     for pid, process_info in processes.items():
+        env_type = "🔒 Isolated" if process_info.venv_path else "🌐 System"
         status_text += (
             f"**PID:** `{pid}`\n"
             f"**Status:** {process_info.status}\n"
             f"**File:** `{process_info.file_path.name}`\n"
             f"**Runtime:** {process_info.runtime}\n"
             f"**Restarts:** {process_info.restart_count}/{process_info.max_restarts}\n"
+            f"**Environment:** {env_type}\n"
             f"{'─'*30}\n"
         )
     
@@ -777,8 +1108,13 @@ def home():
     return jsonify({
         "status": "running",
         "service": "Bot Deploy Manager",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "processes": stats,
+        "features": {
+            "dependency_management": True,
+            "virtual_environments": getattr(config, 'USE_VENV', True),
+            "auto_install": getattr(config, 'AUTO_INSTALL_DEPS', True)
+        },
         "timestamp": datetime.now().isoformat()
     })
 
@@ -790,7 +1126,7 @@ def health():
     
     return jsonify({
         "status": "healthy",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "processes": stats,
         "timestamp": datetime.now().isoformat()
     }), 200
@@ -809,7 +1145,9 @@ def stats():
             "file": info.file_path.name,
             "runtime": info.runtime,
             "restarts": info.restart_count,
-            "max_restarts": info.max_restarts
+            "max_restarts": info.max_restarts,
+            "has_venv": info.venv_path is not None,
+            "has_requirements": info.requirements_file is not None
         })
     
     return jsonify({
@@ -867,7 +1205,8 @@ def run_flask():
 async def main():
     """Main async entry point"""
     logger.info("="*70)
-    logger.info("Bot Deploy Manager v2.0.0 - Professional Edition")
+    logger.info("Bot Deploy Manager v2.1.0 - Professional Edition")
+    logger.info("Features: Dependency Management + Virtual Environments")
     logger.info("="*70)
     
     try:

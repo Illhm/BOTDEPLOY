@@ -1,6 +1,6 @@
-# 🤖 Bot Deploy Manager v2.0
+# 🤖 Bot Deploy Manager v2.1
 
-Professional Telegram bot untuk deployment dan manajemen skrip Python secara remote dengan monitoring otomatis, auto-restart, dan logging lengkap.
+Professional Telegram bot untuk deployment dan manajemen skrip Python secara remote dengan **automatic dependency management**, virtual environment isolation, monitoring otomatis, auto-restart, dan logging lengkap.
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Pyrogram](https://img.shields.io/badge/Pyrogram-2.0-green.svg)](https://docs.pyrogram.org/)
@@ -11,6 +11,9 @@ Professional Telegram bot untuk deployment dan manajemen skrip Python secara rem
 
 ### 🚀 Deployment Fleksibel
 Deploy skrip Python dari URL atau file upload langsung melalui Telegram dengan validasi otomatis dan isolasi proses.
+
+### 📦 Dependency Management (NEW!)
+Auto-detect dan install dependencies dari script imports, virtual environment per process untuk isolasi lengkap, support upload requirements.txt untuk custom dependencies, dan fallback mechanism untuk cloud platforms dengan restrictions.
 
 ### 📊 Monitoring Real-time
 Status monitoring untuk semua proses dengan auto-restart pada failure (maksimal 3 kali percobaan), notifikasi real-time via Telegram, dan log rotation otomatis untuk mencegah disk penuh.
@@ -72,6 +75,29 @@ python run.py
 ```
 
 ## 📖 Cara Penggunaan
+
+### Deployment dengan Dependencies
+
+**Method 1: Auto-Detection (Recommended)**
+```
+1. Send your Python script to the bot
+2. Bot will auto-detect imports (e.g., requests, pandas, etc.)
+3. Bot creates isolated venv and installs dependencies
+4. Script runs in isolated environment
+```
+
+**Method 2: Custom Requirements**
+```
+1. Send your Python script to the bot
+2. Within 10 seconds, send requirements.txt
+3. Bot installs all packages from requirements.txt
+4. Script runs with custom dependencies
+```
+
+**Method 3: URL Deployment**
+```
+/deploy https://example.com/script.py
+```
 
 ### Command Bot
 
@@ -328,6 +354,21 @@ curl http://localhost:5000/health
 3. Atau ubah `FLASK_PORT` di config.py
 
 ## 📝 Changelog
+
+### v2.1.0 (2024-12-04)
+
+#### 📦 Dependency Management
+- ✅ Auto-detect imports from script
+- ✅ Virtual environment per process
+- ✅ Support requirements.txt upload
+- ✅ Isolated package installation
+- ✅ Fallback for cloud restrictions
+
+#### 🔧 Improvements
+- ✅ Better error messages
+- ✅ Enhanced logging for dependencies
+- ✅ Configurable venv cleanup
+- ✅ Support for both auto and manual deps
 
 ### v2.0.0 (2024-12-04)
 

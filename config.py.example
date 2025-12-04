@@ -61,3 +61,19 @@ MAX_LOG_SIZE = 10 * 1024 * 1024  # 10MB
 
 # Number of backup log files to keep
 LOG_BACKUP_COUNT = 5
+
+# ============================================================================
+# DEPENDENCY MANAGEMENT (OPTIONAL)
+# ============================================================================
+# Use virtual environment for each process (RECOMMENDED)
+USE_VENV = True
+
+# Auto-detect and install dependencies from script imports
+AUTO_INSTALL_DEPS = True
+
+# Directory for virtual environments
+VENV_DIR = "./venvs"
+
+# Cleanup virtual environment after process stops
+# Set to False to keep venvs for debugging
+CLEANUP_VENV = False
