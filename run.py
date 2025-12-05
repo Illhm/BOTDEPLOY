@@ -24,8 +24,8 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
-from pyrogram import Client, filters, idle
-from pyrogram.types import Message
+from telebot.async_telebot import AsyncTeleBot
+from telebot import types as tele_types
 from flask import Flask, request, jsonify
 from logging.handlers import RotatingFileHandler
 
@@ -43,8 +43,6 @@ def _load_env_overrides():
     """Load configuration values from environment variables when present."""
 
     env_mapping = {
-        "API_ID": "API_ID",
-        "API_HASH": "API_HASH",
         "BOT_TOKEN": "BOT_TOKEN",
         "ALLOWED_USERS": "ALLOWED_USERS",
         "SHUTDOWN_TOKEN": "SHUTDOWN_TOKEN",
@@ -145,8 +143,6 @@ def validate_config():
 
     # Required fields
     required_fields = {
-        'API_ID': 'Telegram API ID',
-        'API_HASH': 'Telegram API Hash',
         'BOT_TOKEN': 'Telegram Bot Token'
     }
     
@@ -155,12 +151,6 @@ def validate_config():
         if not value or str(value).startswith('YOUR_'):
             errors.append(f"{description} ({field}) is not configured")
     
-    # Ensure API_ID is an integer (Pyrogram requirement)
-    try:
-        config.API_ID = int(getattr(config, 'API_ID'))
-    except (TypeError, ValueError):
-        errors.append("Telegram API ID (API_ID) must be an integer")
-
     if errors:
         logger.error("Configuration validation failed:")
         for error in errors:
@@ -456,11 +446,11 @@ class ProcessManager:
     def __init__(self):
         self._processes: Dict[int, ProcessInfo] = {}
         self._lock = Lock()
-        self._bot_client: Optional[Client] = None
+        self._bot_client: Optional[AsyncTeleBot] = None
         self._max_processes = getattr(config, 'MAX_PROCESSES', 10)
         self._dependency_manager = DependencyManager()
     
-    def set_bot_client(self, client: Client):
+    def set_bot_client(self, client: AsyncTeleBot):
         """Set bot client for notifications"""
         self._bot_client = client
     
@@ -614,7 +604,7 @@ class ProcessManager:
                 await self._bot_client.send_message(
                     process_info.chat_id,
                     message,
-                    parse_mode="markdown"
+                    parse_mode="Markdown"
                 )
             except Exception as e:
                 logger.error(f"Failed to send notification: {e}")
@@ -677,13 +667,16 @@ class ProcessManager:
             
             # Send notification
             if self._bot_client:
-                await self._bot_client.send_message(
-                    old_process.chat_id,
-                    f"🔄 **Process Restarted**\n\n"
+                restart_message = (
+                    "🔄 **Process Restarted**\n\n"
                     f"**Old PID:** `{old_process.pid}`\n"
                     f"**New PID:** `{new_process.pid}`\n"
-                    f"**Restart Count:** {new_process_info.restart_count}/{new_process_info.max_restarts}",
-                    parse_mode="markdown"
+                    f"**Restart Count:** {new_process_info.restart_count}/{new_process_info.max_restarts}"
+                )
+                await self._bot_client.send_message(
+                    old_process.chat_id,
+                    restart_message,
+                    parse_mode="Markdown"
                 )
             
             logger.info(f"Process restarted successfully: {new_process.pid}")
@@ -707,15 +700,13 @@ process_manager = ProcessManager()
 # ============================================================================
 
 # Initialize bot
-app = Client(
-    "deploy_bot",
-    api_id=config.API_ID,
-    api_hash=config.API_HASH,
-    bot_token=config.BOT_TOKEN
+bot = AsyncTeleBot(
+    config.BOT_TOKEN,
+    parse_mode="Markdown"
 )
 
 # Set bot client in process manager
-process_manager.set_bot_client(app)
+process_manager.set_bot_client(bot)
 
 
 def _parse_allowed_users(raw_value) -> List[int]:
@@ -756,7 +747,7 @@ def _parse_allowed_users(raw_value) -> List[int]:
     return []
 
 
-def is_authorized(message: Message) -> bool:
+def is_authorized(message: tele_types.Message) -> bool:
     """Check if user is authorized to use bot."""
 
     if not getattr(message, "from_user", None):
@@ -771,8 +762,41 @@ def is_authorized(message: Message) -> bool:
     return message.from_user.id in allowed_users
 
 
-@app.on_message(filters.command("start"))
-async def start_command(client: Client, message: Message):
+def _parse_command(message: tele_types.Message) -> List[str]:
+    """Split incoming command text into parts."""
+
+    text = (message.text or message.caption or "").strip()
+    if not text.startswith('/'):
+        return []
+    return text.split()
+
+
+async def _reply(message: tele_types.Message, text: str, **kwargs):
+    """Convenience wrapper for sending replies."""
+
+    return await bot.send_message(message.chat.id, text, **kwargs)
+
+
+async def _reply_document(message: tele_types.Message, file_path: Path, **kwargs):
+    """Send a document to the chat."""
+
+    with open(file_path, "rb") as doc_file:
+        return await bot.send_document(message.chat.id, doc_file, **kwargs)
+
+
+async def _download_document(message: tele_types.Message, destination: Path) -> Path:
+    file_info = await bot.get_file(message.document.file_id)
+    file_bytes = await bot.download_file(file_info.file_path)
+    destination.write_bytes(file_bytes)
+    return destination
+
+
+# Global storage for pending deployments (waiting for requirements.txt)
+pending_deployments: Dict[int, dict] = {}
+
+
+@bot.message_handler(commands=["start"])
+async def start_command(message: tele_types.Message):
     """Handle /start command"""
     welcome_text = (
         "👋 **Welcome to Bot Deploy Manager v2.1**\n\n"
@@ -794,403 +818,364 @@ async def start_command(client: Client, message: Message):
         "⚠️ **Security Notice:**\n"
         "Only authorized users can use this bot."
     )
-    await message.reply(welcome_text, parse_mode="markdown")
+    await _reply(message, welcome_text)
 
 
-@app.on_message(filters.command("help"))
-async def help_command(client: Client, message: Message):
+@bot.message_handler(commands=["help"])
+async def help_command(message: tele_types.Message):
     """Handle /help command"""
-    await start_command(client, message)
+    await start_command(message)
 
 
-# Global storage for pending deployments (waiting for requirements.txt)
-pending_deployments: Dict[int, dict] = {}
+async def _handle_deploy(message: tele_types.Message, file_path: Path, requirements_file: Optional[Path]):
+    """Shared deployment logic once script and requirements are available."""
+
+    log_dir = Path(getattr(config, 'LOG_DIR', './logs'))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"log_{datetime.now().timestamp()}.txt"
+
+    await _reply(message, "⚙️ **Preparing environment...**")
+
+    venv_path, dep_status = await process_manager.setup_dependencies(
+        file_path, requirements_file
+    )
+
+    await _reply(message, dep_status)
+
+    process = process_manager.run_script(file_path, log_path, venv_path, message.chat.id)
+
+    if not process:
+        await _reply(message, "❌ Failed to start process")
+        return
+
+    process_info = ProcessInfo(
+        pid=process.pid,
+        process=process,
+        file_path=file_path,
+        log_path=log_path,
+        chat_id=message.chat.id,
+        venv_path=venv_path,
+        requirements_file=requirements_file,
+        max_restarts=getattr(config, 'MAX_RESTART_ATTEMPTS', 3)
+    )
+    process_info.dependencies_installed = dep_status.startswith("✅")
+
+    if not process_manager.add_process(process_info):
+        process.terminate()
+        await _reply(message, "❌ **Process limit reached**")
+        return
+
+    await _reply(
+        message,
+        (
+            f"✅ **Deployment Started**\n\n"
+            f"**PID:** `{process.pid}`\n"
+            f"**File:** `{file_path.name}`\n"
+            f"**Log:** `{log_path.name}`\n\n"
+            "Use `/status` to monitor progress"
+        ),
+    )
+
+    logger.info(f"Started process {process.pid} for file {file_path}")
 
 
-@app.on_message(filters.command("deploy") | filters.document)
-async def deploy_command(client: Client, message: Message):
-    """Handle script deployment"""
-    
-    # Authorization check
+@bot.message_handler(commands=["deploy"])
+async def deploy_command(message: tele_types.Message):
+    """Handle script deployment from URL."""
+
     if not is_authorized(message):
-        await message.reply(
+        await _reply(
+            message,
             "❌ **Access Denied**\n\n"
             "You are not authorized to use this bot.\n"
             "Contact the bot administrator for access."
         )
         logger.warning(f"Unauthorized access attempt by user {message.from_user.id}")
         return
-    
-    try:
-        # Check process limit
-        stats = process_manager.get_stats()
-        if stats['total'] >= stats['max']:
-            await message.reply(
-                f"❌ **Process Limit Reached**\n\n"
-                f"Maximum concurrent processes: {stats['max']}\n"
-                f"Currently running: {stats['running']}\n\n"
-                "Please stop some processes first using `/stop <pid>`"
-            )
-            return
-        
-        # Get script file
-        file_path = None
-        requirements_file = None
-        temp_dir = Path(getattr(config, 'TEMP_DIR', '/tmp/botdeploy'))
-        
-        # Check if this is a requirements.txt upload for pending deployment
-        if message.document and message.document.file_name == "requirements.txt":
-            user_id = message.from_user.id
-            if user_id in pending_deployments:
-                await message.reply("📥 **Downloading requirements.txt...**")
-                downloaded_path = await message.download()
-                
-                timestamp = datetime.now().timestamp()
-                requirements_file = temp_dir / f"requirements_{timestamp}.txt"
-                Path(downloaded_path).rename(requirements_file)
-                
-                # Get pending deployment info
-                pending = pending_deployments.pop(user_id)
-                file_path = pending['file_path']
-                
-                await message.reply(
-                    "✅ **Requirements received!**\n\n"
-                    "Starting deployment with custom requirements..."
-                )
-            else:
-                await message.reply(
-                    "⚠️ **No Pending Deployment**\n\n"
-                    "Please deploy a Python script first, then send requirements.txt"
-                )
-                return
-        
-        # Handle Python file upload
-        elif message.document and message.document.file_name.endswith(".py"):
-            await message.reply("📥 **Downloading script file...**")
-            downloaded_path = await message.download()
-            
-            # Move to temp directory with unique name
-            timestamp = datetime.now().timestamp()
-            file_path = temp_dir / f"script_{timestamp}_{message.document.file_name}"
-            Path(downloaded_path).rename(file_path)
-            
-            # Ask if user wants to upload requirements.txt
-            user_id = message.from_user.id
-            pending_deployments[user_id] = {'file_path': file_path, 'timestamp': timestamp}
-            
-            await message.reply(
-                "✅ **Script received!**\n\n"
-                "📋 **Optional:** Send `requirements.txt` now for custom dependencies\n"
-                "⏭️ **Or** wait 10 seconds for auto-detection\n\n"
-                "Auto-deployment will start automatically..."
-            )
-            
-            # Wait 10 seconds for requirements.txt
-            await asyncio.sleep(10)
-            
-            # Check if requirements.txt was uploaded
-            if user_id in pending_deployments:
-                # No requirements.txt uploaded, proceed with auto-detection
-                pending_deployments.pop(user_id)
-                await message.reply("⏳ **Starting auto-deployment...**")
-            else:
-                # Requirements.txt was uploaded, already handled above
-                return
-            
-        elif message.command and len(message.command) > 1:
-            # URL download
-            url = message.command[1]
-            await message.reply(f"📥 **Downloading script from URL...**")
-            
-            try:
-                response = requests.get(url, timeout=30)
-                response.raise_for_status()
-                
-                # Save to temp file
-                timestamp = datetime.now().timestamp()
-                file_path = temp_dir / f"script_{timestamp}.py"
-                file_path.write_bytes(response.content)
-                
-            except requests.exceptions.RequestException as e:
-                await message.reply(
-                    f"❌ **Download Failed**\n\n"
-                    f"Error: `{str(e)}`\n\n"
-                    "Please check the URL and try again."
-                )
-                logger.error(f"Download failed: {e}")
-                return
-        else:
-            await message.reply(
-                "❌ **Invalid Command**\n\n"
-                "Please provide a script:\n"
-                "• Send a Python file directly, or\n"
-                "• Use `/deploy <url>` with a direct link to a Python file\n\n"
-                "**Optional:** Send requirements.txt after the script for custom dependencies"
-            )
-            return
-        
-        # Validate file
-        if not file_path or not file_path.exists():
-            await message.reply("❌ **Failed to save script file**")
-            return
-        
-        # Setup dependencies
-        setup_msg = await message.reply("⚙️ **Setting up environment...**")
-        
-        venv_path, dep_message = await process_manager.setup_dependencies(file_path, requirements_file)
-        
-        await setup_msg.edit_text(f"**Environment Setup:**\n\n{dep_message}")
-        
-        # Determine python executable
-        if venv_path:
-            python_path = venv_path / "bin" / "python"
-            if not python_path.exists():
-                python_path = venv_path / "Scripts" / "python.exe"  # Windows
-        else:
-            python_path = sys.executable
-        
-        # Create log file
-        log_dir = Path(getattr(config, 'LOG_DIR', './logs'))
-        timestamp = datetime.now().timestamp()
-        log_path = log_dir / f"process_{timestamp}.log"
-        
-        # Start process
-        await message.reply("🚀 **Starting process...**")
-        
-        with open(log_path, "w") as log_file:
-            log_file.write(f"{'='*60}\n")
-            log_file.write(f"Bot Deploy Manager - Process Log\n")
-            log_file.write(f"{'='*60}\n")
-            log_file.write(f"Started: {datetime.now()}\n")
-            log_file.write(f"Script: {file_path.name}\n")
-            log_file.write(f"User ID: {message.from_user.id}\n")
-            log_file.write(f"User: @{message.from_user.username or 'N/A'}\n")
-            log_file.write(f"Python: {python_path}\n")
-            log_file.write(f"VEnv: {venv_path or 'System'}\n")
-            log_file.write(f"{'='*60}\n\n")
-            
-            process = subprocess.Popen(
-                [str(python_path), str(file_path)],
-                stdout=log_file,
-                stderr=log_file,
-                env=os.environ,
-                cwd=temp_dir
-            )
-        
-        # Create process info
-        process_info = ProcessInfo(
-            pid=process.pid,
-            process=process,
-            file_path=file_path,
-            log_path=log_path,
-            chat_id=message.chat.id,
-            venv_path=venv_path,
-            requirements_file=requirements_file
-        )
-        process_info.dependencies_installed = True
-        
-        # Add to manager
-        if process_manager.add_process(process_info):
-            await message.reply(
-                f"✅ **Process Started Successfully**\n\n"
-                f"**PID:** `{process.pid}`\n"
-                f"**File:** `{file_path.name}`\n"
-                f"**Log:** `{log_path.name}`\n"
-                f"**Environment:** {'Virtual (Isolated)' if venv_path else 'System'}\n\n"
-                f"**Monitoring:** Enabled\n"
-                f"**Auto-restart:** Up to {process_info.max_restarts} attempts\n\n"
-                "Use `/status` to check process status\n"
-                f"Use `/log {process.pid}` to view logs",
-                parse_mode="markdown"
-            )
-            logger.info(
-                f"Process {process.pid} started by user {message.from_user.id} "
-                f"(@{message.from_user.username or 'N/A'})"
-            )
-        else:
-            process.terminate()
-            await message.reply("❌ **Failed to register process**")
-            
-    except Exception as e:
-        logger.error(f"Error in deploy command: {e}", exc_info=True)
-        await message.reply(
-            f"❌ **An error occurred**\n\n"
-            f"Error: `{str(e)}`\n\n"
-            "Please try again or contact the administrator."
-        )
 
-
-@app.on_message(filters.command("status"))
-async def status_command(client: Client, message: Message):
-    """Handle status check command"""
-    
-    if not is_authorized(message):
-        await message.reply("❌ You are not authorized to use this bot.")
+    parts = _parse_command(message)
+    if len(parts) < 2:
+        await _reply(message, "❌ **Invalid Command**\n\nUsage: `/deploy <url>`")
         return
-    
-    processes = process_manager.get_all_processes()
+
     stats = process_manager.get_stats()
-    
-    if not processes:
-        await message.reply(
-            "ℹ️ **No Active Processes**\n\n"
-            f"Maximum capacity: {stats['max']} processes\n\n"
-            "Use `/deploy <url>` to start a new process"
+    if stats['total'] >= stats['max']:
+        await _reply(
+            message,
+            f"❌ **Process Limit Reached**\n\n"
+            f"Maximum concurrent processes: {stats['max']}\n"
+            f"Currently running: {stats['running']}\n\n"
+            "Please stop some processes first using `/stop <pid>`"
         )
         return
-    
-    status_text = (
-        f"📊 **Process Status**\n\n"
-        f"**Total:** {stats['total']} / {stats['max']}\n"
-        f"**Running:** {stats['running']}\n"
-        f"{'─'*30}\n\n"
-    )
-    
-    for pid, process_info in processes.items():
-        env_type = "🔒 Isolated" if process_info.venv_path else "🌐 System"
-        status_text += (
-            f"**PID:** `{pid}`\n"
-            f"**Status:** {process_info.status}\n"
-            f"**File:** `{process_info.file_path.name}`\n"
-            f"**Runtime:** {process_info.runtime}\n"
-            f"**Restarts:** {process_info.restart_count}/{process_info.max_restarts}\n"
-            f"**Environment:** {env_type}\n"
-            f"{'─'*30}\n"
+
+    url = parts[1]
+    if not re.match(r'^https?://', url):
+        await _reply(
+            message,
+            "❌ **Invalid URL**\n\n"
+            "Please provide a valid HTTP/HTTPS URL"
         )
-    
-    await message.reply(status_text, parse_mode="markdown")
+        return
+
+    temp_dir = Path(getattr(config, 'TEMP_DIR', '/tmp/botdeploy'))
+    await _reply(message, "🌐 **Downloading script from URL...**")
+
+    file_path = temp_dir / f"script_{datetime.now().timestamp()}.py"
+
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        file_path.write_text(response.text, encoding='utf-8')
+    except Exception as e:
+        logger.error(f"Failed to download script: {e}")
+        await _reply(
+            message,
+            "❌ **Download Failed**\n\n"
+            f"Error: `{str(e)}`"
+        )
+        return
+
+    await _handle_deploy(message, file_path, None)
 
 
-@app.on_message(filters.command("log"))
-async def log_command(client: Client, message: Message):
-    """Handle log retrieval command"""
-    
+@bot.message_handler(content_types=['document'])
+async def deploy_document(message: tele_types.Message):
+    """Handle script and requirements file uploads."""
+
     if not is_authorized(message):
-        await message.reply("❌ You are not authorized to use this bot.")
+        await _reply(message, "❌ You are not authorized to use this bot.")
         return
-    
-    if len(message.command) < 2:
-        await message.reply(
+
+    stats = process_manager.get_stats()
+    if stats['total'] >= stats['max']:
+        await _reply(
+            message,
+            f"❌ **Process Limit Reached**\n\n"
+            f"Maximum concurrent processes: {stats['max']}\n"
+            f"Currently running: {stats['running']}\n\n"
+            "Please stop some processes first using `/stop <pid>`"
+        )
+        return
+
+    temp_dir = Path(getattr(config, 'TEMP_DIR', '/tmp/botdeploy'))
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    if message.document.file_name == "requirements.txt":
+        user_id = message.from_user.id
+        if user_id not in pending_deployments:
+            await _reply(
+                message,
+                "⚠️ **No Pending Deployment**\n\n"
+                "Please deploy a Python script first, then send requirements.txt"
+            )
+            return
+
+        await _reply(message, "📥 **Downloading requirements.txt...**")
+        requirements_path = temp_dir / f"requirements_{datetime.now().timestamp()}.txt"
+        await _download_document(message, requirements_path)
+
+        pending = pending_deployments.pop(user_id)
+        await _reply(
+            message,
+            "✅ **Requirements received!**\n\n"
+            "Starting deployment with custom requirements..."
+        )
+        await _handle_deploy(message, pending['file_path'], requirements_path)
+        return
+
+    if not message.document.file_name.endswith('.py'):
+        await _reply(message, "❌ Only Python files (.py) are supported for deployment.")
+        return
+
+    await _reply(message, "📥 **Downloading script file...**")
+    timestamp = datetime.now().timestamp()
+    script_path = temp_dir / f"script_{timestamp}_{message.document.file_name}"
+    await _download_document(message, script_path)
+
+    user_id = message.from_user.id
+    pending_deployments[user_id] = {'file_path': script_path, 'timestamp': timestamp}
+
+    await _reply(
+        message,
+        "✅ **Script received!**\n\n"
+        "📋 **Optional:** Send `requirements.txt` now for custom dependencies\n"
+        "⏭️ **Or** wait 10 seconds for auto-detection\n\n"
+        "Auto-deployment will start automatically..."
+    )
+
+    await asyncio.sleep(10)
+
+    if user_id in pending_deployments:
+        pending_deployments.pop(user_id)
+        await _handle_deploy(message, script_path, None)
+
+
+@bot.message_handler(commands=["status"])
+async def status_command(message: tele_types.Message):
+    """Handle status command"""
+
+    if not is_authorized(message):
+        await _reply(message, "❌ You are not authorized to use this bot.")
+        return
+
+    processes = process_manager.get_all_processes()
+
+    if not processes:
+        await _reply(message, "ℹ️ No active processes at the moment.")
+        return
+
+    status_messages = ["📊 **Process Status**\n"]
+
+    for process in processes.values():
+        status_messages.append(
+            f"PID: `{process.pid}`\n"
+            f"Status: {'✅ Running' if process.is_running else '❌ Stopped'}\n"
+            f"File: {process.file_path.name}\n"
+            f"Runtime: {process.runtime}\n"
+            f"Restarts: {process.restart_count}/{process.max_restarts}\n"
+            f"Log: {process.log_path.name}\n"
+            "──────────────────────────────\n"
+        )
+
+    await _reply(message, "\n".join(status_messages))
+
+
+@bot.message_handler(commands=["log"])
+async def log_command(message: tele_types.Message):
+    """Handle log retrieval command"""
+
+    if not is_authorized(message):
+        await _reply(message, "❌ You are not authorized to use this bot.")
+        return
+
+    parts = _parse_command(message)
+    if len(parts) < 2:
+        await _reply(
+            message,
             "❌ **Invalid Command**\n\n"
             "Usage: `/log <pid>`\n\n"
             "Example: `/log 12345`"
         )
         return
-    
+
     try:
-        pid = int(message.command[1])
+        pid = int(parts[1])
         process_info = process_manager.get_process(pid)
-        
+
         if not process_info:
-            await message.reply(
+            await _reply(
+                message,
                 f"❌ **Process Not Found**\n\n"
                 f"PID `{pid}` does not exist.\n\n"
                 "Use `/status` to see active processes"
             )
             return
-        
+
         if not process_info.log_path.exists():
-            await message.reply("❌ **Log file not found**")
+            await _reply(message, "❌ **Log file not found**")
             return
-        
-        # Check file size
+
         file_size = process_info.log_path.stat().st_size
-        max_telegram_size = 50 * 1024 * 1024  # 50MB Telegram limit
-        
+        max_telegram_size = 50 * 1024 * 1024
+
         if file_size > max_telegram_size:
-            await message.reply(
+            await _reply(
+                message,
                 f"⚠️ **Log File Too Large**\n\n"
                 f"File size: {file_size / 1024 / 1024:.2f} MB\n"
                 f"Telegram limit: 50 MB\n\n"
                 "Sending last 1000 lines instead..."
             )
-            
+
             log_tail = process_info.get_log_tail(1000)
-            
-            # Save to temp file
             temp_dir = Path(getattr(config, 'TEMP_DIR', '/tmp/botdeploy'))
             temp_log = temp_dir / f"log_tail_{pid}.txt"
             temp_log.write_text(log_tail)
-            
-            await message.reply_document(
-                str(temp_log),
+
+            await _reply_document(
+                message,
+                temp_log,
                 caption=f"📄 Last 1000 lines of log for PID {pid}"
             )
-            
+
             temp_log.unlink()
         else:
-            await message.reply_document(
-                str(process_info.log_path),
-                caption=f"📄 Complete log for PID {pid}\n"
-                        f"Size: {file_size / 1024:.2f} KB"
+            await _reply_document(
+                message,
+                process_info.log_path,
+                caption=(
+                    f"📄 Complete log for PID {pid}\n"
+                    f"Size: {file_size / 1024:.2f} KB"
+                )
             )
-        
+
         logger.info(f"Log file sent for process {pid}")
-        
+
     except ValueError:
-        await message.reply("❌ PID must be a number")
+        await _reply(message, "❌ PID must be a number")
     except Exception as e:
         logger.error(f"Error in log command: {e}", exc_info=True)
-        await message.reply(f"❌ An error occurred: `{str(e)}`")
+        await _reply(message, f"❌ An error occurred: `{str(e)}`")
 
 
-@app.on_message(filters.command("stop"))
-async def stop_command(client: Client, message: Message):
+@bot.message_handler(commands=["stop"])
+async def stop_command(message: tele_types.Message):
     """Handle process stop command"""
-    
+
     if not is_authorized(message):
-        await message.reply("❌ You are not authorized to use this bot.")
+        await _reply(message, "❌ You are not authorized to use this bot.")
         return
-    
-    if len(message.command) < 2:
-        await message.reply(
+
+    parts = _parse_command(message)
+    if len(parts) < 2:
+        await _reply(
+            message,
             "❌ **Invalid Command**\n\n"
             "Usage: `/stop <pid>`\n\n"
             "Example: `/stop 12345`"
         )
         return
-    
+
     try:
-        pid = int(message.command[1])
+        pid = int(parts[1])
         process_info = process_manager.get_process(pid)
-        
+
         if not process_info:
-            await message.reply(
+            await _reply(
+                message,
                 f"❌ **Process Not Found**\n\n"
                 f"PID `{pid}` does not exist.\n\n"
                 "Use `/status` to see active processes"
             )
             return
-        
-        # Mark as stopped to prevent restart
+
         process_info._status = "stopped"
-        
-        # Remove from manager and cleanup
         process_manager.remove_process(pid)
         process_info.cleanup()
-        
-        await message.reply(
-            f"✅ **Process Stopped**\n\n"
-            f"**PID:** `{pid}`\n"
-            f"**File:** `{process_info.file_path.name}`\n"
-            f"**Runtime:** {process_info.runtime}\n"
-            f"**Log:** `{process_info.log_path.name}`\n\n"
-            "The log file has been preserved for review.",
-            parse_mode="markdown"
+
+        await _reply(
+            message,
+            (
+                f"✅ **Process Stopped**\n\n"
+                f"**PID:** `{pid}`\n"
+                f"**File:** `{process_info.file_path.name}`\n"
+                f"**Runtime:** {process_info.runtime}\n"
+                f"**Log:** `{process_info.log_path.name}`\n\n"
+                "The log file has been preserved for review."
+            ),
         )
-        
+
         logger.info(
             f"Process {pid} stopped by user {message.from_user.id} "
             f"(@{message.from_user.username or 'N/A'})"
         )
-        
+
     except ValueError:
-        await message.reply("❌ PID must be a number")
+        await _reply(message, "❌ PID must be a number")
     except Exception as e:
         logger.error(f"Error in stop command: {e}", exc_info=True)
-        await message.reply(f"❌ An error occurred: `{str(e)}`")
-
-
+        await _reply(message, f"❌ An error occurred: `{str(e)}`")
 # ============================================================================
 # FLASK WEB SERVER
 # ============================================================================
@@ -1305,27 +1290,24 @@ async def main():
     logger.info("Bot Deploy Manager v2.1.0 - Professional Edition")
     logger.info("Features: Dependency Management + Virtual Environments")
     logger.info("="*70)
-    
+
+    monitor_task = None
     try:
         # Start Flask in background thread
         flask_thread = Thread(target=run_flask, daemon=True)
         flask_thread.start()
         logger.info("✓ Flask server started")
         
-        # Start bot
-        await app.start()
-        logger.info("✓ Telegram bot started")
-        
         # Start process monitor
         monitor_task = asyncio.create_task(process_manager.monitor_processes())
         logger.info("✓ Process monitor started")
-        
+
         logger.info("="*70)
         logger.info("All systems operational - Bot is ready!")
         logger.info("="*70)
-        
-        # Keep running
-        await idle()
+
+        # Start bot polling
+        await bot.infinity_polling()
         
     except KeyboardInterrupt:
         logger.info("Shutdown requested by user")
@@ -1337,8 +1319,8 @@ async def main():
         # Cleanup
         process_manager.cleanup_all()
         
-        # Stop bot
-        await app.stop()
+        if monitor_task:
+            monitor_task.cancel()
         logger.info("✓ Bot stopped")
         
         logger.info("Shutdown complete")
