@@ -62,6 +62,8 @@ def _load_env_overrides():
         "CLEANUP_VENV": "CLEANUP_VENV",
     }
 
+    int_fields = {"FLASK_PORT", "MAX_PROCESSES", "MONITOR_INTERVAL", "PROCESS_TIMEOUT", "MAX_RESTART_ATTEMPTS"}
+
     for attr_name, env_name in env_mapping.items():
         env_value = os.getenv(env_name)
         if env_value is None:
@@ -80,8 +82,13 @@ def _load_env_overrides():
             setattr(config, attr_name, env_value.lower() == "true")
             continue
 
-        if env_value.isdigit():
-            setattr(config, attr_name, int(env_value))
+        if attr_name in int_fields:
+            try:
+                setattr(config, attr_name, int(str(env_value).strip()))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid integer value for %s from environment (%s); using default", attr_name, env_value
+                )
             continue
 
         setattr(config, attr_name, env_value)
@@ -213,6 +220,11 @@ class DependencyManager:
         'weakref', 'webbrowser', 'winreg', 'winsound', 'wsgiref', 'xdrlib', 'xml', 'xmlrpc',
         'zipapp', 'zipfile', 'zipimport', 'zlib', '_thread'
     }
+
+    # Map commonly-misnamed imports to their PyPI package equivalents
+    PACKAGE_ALIASES = {
+        "pil": "Pillow",
+    }
     
     @staticmethod
     def extract_imports(script_path: Path) -> Set[str]:
@@ -246,10 +258,28 @@ class DependencyManager:
             
             logger.debug(f"Found imports: {external_imports}")
             return external_imports
-            
+
         except Exception as e:
             logger.error(f"Error extracting imports: {e}")
             return set()
+
+    @classmethod
+    def resolve_packages(cls, imports: Set[str]) -> List[str]:
+        """Map detected imports to installable package names."""
+
+        resolved = []
+        seen: Set[str] = set()
+
+        for module in sorted(imports):
+            package_name = cls.PACKAGE_ALIASES.get(module.lower(), module)
+
+            if package_name in seen:
+                continue
+
+            seen.add(package_name)
+            resolved.append(package_name)
+
+        return resolved
     
     @staticmethod
     def create_venv(venv_path: Path) -> bool:
@@ -343,9 +373,17 @@ class DependencyManager:
 class ProcessInfo:
     """Information about a running process"""
     
-    def __init__(self, pid: int, process: subprocess.Popen, 
-                 file_path: Path, log_path: Path, chat_id: int,
-                 venv_path: Optional[Path] = None, requirements_file: Optional[Path] = None):
+    def __init__(
+        self,
+        pid: int,
+        process: subprocess.Popen,
+        file_path: Path,
+        log_path: Path,
+        chat_id: int,
+        venv_path: Optional[Path] = None,
+        requirements_file: Optional[Path] = None,
+        max_restarts: Optional[int] = None,
+    ):
         self.pid = pid
         self.process = process
         self.file_path = file_path
@@ -355,7 +393,9 @@ class ProcessInfo:
         self.requirements_file = requirements_file
         self.created_at = datetime.now()
         self.restart_count = 0
-        self.max_restarts = getattr(config, 'MAX_RESTART_ATTEMPTS', 3)
+        self.max_restarts = max_restarts if max_restarts is not None else getattr(
+            config, 'MAX_RESTART_ATTEMPTS', 3
+        )
         self._status = "running"
         self.dependencies_installed = False
     
@@ -539,13 +579,14 @@ class ProcessManager:
             elif auto_install:
                 messages.append("🔍 Detecting dependencies...")
                 imports = self._dependency_manager.extract_imports(script_path)
-                
-                if imports:
-                    messages.append(f"📦 Found packages: {', '.join(imports)}")
+                packages = self._dependency_manager.resolve_packages(imports)
+
+                if packages:
+                    messages.append(f"📦 Found packages: {', '.join(packages)}")
                     messages.append("⏳ Installing packages...")
-                    
-                    success, output = self._dependency_manager.install_packages(venv_path, list(imports))
-                    
+
+                    success, output = self._dependency_manager.install_packages(venv_path, packages)
+
                     if success:
                         messages.append("✅ Dependencies installed successfully")
                     else:
@@ -564,21 +605,58 @@ class ProcessManager:
         """Monitor all processes and handle failures"""
         monitor_interval = getattr(config, 'MONITOR_INTERVAL', 5)
         logger.info(f"Process monitor started (interval: {monitor_interval}s)")
-        
+
         while True:
             try:
                 await asyncio.sleep(monitor_interval)
-                
+
                 processes = self.get_all_processes()
                 for pid, process_info in processes.items():
                     if not process_info.is_running and process_info._status != "stopped":
                         await self._handle_process_failure(process_info)
-                
+
             except asyncio.CancelledError:
                 logger.info("Process monitor stopped")
                 break
             except Exception as e:
                 logger.error(f"Error in process monitor: {e}", exc_info=True)
+
+    def run_script(
+        self,
+        script_path: Path,
+        log_path: Path,
+        venv_path: Optional[Path],
+        chat_id: int,
+    ) -> Optional[subprocess.Popen]:
+        """Start a script as a subprocess with optional virtual environment.
+
+        Returns the Popen object or None when startup fails.
+        """
+
+        try:
+            python_path = Path(sys.executable)
+            if venv_path:
+                python_path = venv_path / "bin" / "python"
+                if not python_path.exists():
+                    python_path = venv_path / "Scripts" / "python.exe"
+
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_path, "a") as log_file:
+                process = subprocess.Popen(
+                    [str(python_path), str(script_path)],
+                    stdout=log_file,
+                    stderr=log_file,
+                    cwd=script_path.parent,
+                    env=os.environ,
+                )
+
+            return process
+
+        except Exception as exc:
+            logger.error(
+                "Failed to start script %s for chat %s: %s", script_path, chat_id, exc, exc_info=True
+            )
+            return None
     
     async def _handle_process_failure(self, process_info: ProcessInfo):
         """Handle process failure and attempt restart"""
