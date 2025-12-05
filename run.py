@@ -18,6 +18,7 @@ import logging
 import tempfile
 import subprocess
 import venv
+import atexit
 from threading import Thread, Lock
 from typing import Dict, Optional, Set, List
 from datetime import datetime
@@ -141,6 +142,67 @@ _load_env_overrides()
 
 
 # ============================================================================
+# INSTANCE LOCK
+# ============================================================================
+
+_INSTANCE_LOCK: Optional[Path] = None
+
+
+def acquire_instance_lock():
+    """Prevent multiple bot instances from running concurrently."""
+
+    global _INSTANCE_LOCK
+
+    lock_path = Path(getattr(config, "LOCK_FILE", "/tmp/botdeploy.lock"))
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if lock_path.exists():
+        existing_pid: Optional[int] = None
+        try:
+            existing_pid = int(lock_path.read_text().strip())
+            if existing_pid and existing_pid != os.getpid():
+                # Check if process is still alive
+                os.kill(existing_pid, 0)
+                logger.critical(
+                    "Another bot instance is already running (PID: %s). Exiting to avoid Telegram getUpdates conflict.",
+                    existing_pid,
+                )
+                sys.exit(1)
+        except ProcessLookupError:
+            logger.warning("Stale lock file detected for PID %s; removing.", existing_pid)
+            lock_path.unlink(missing_ok=True)
+        except Exception as exc:  # pragma: no cover - safety net
+            logger.error("Failed to validate existing lock file: %s", exc)
+            lock_path.unlink(missing_ok=True)
+
+    try:
+        lock_path.write_text(str(os.getpid()))
+        _INSTANCE_LOCK = lock_path
+        logger.info("Instance lock acquired at %s", lock_path)
+    except Exception as exc:  # pragma: no cover - unlikely
+        logger.critical("Unable to create instance lock %s: %s", lock_path, exc)
+        sys.exit(1)
+
+
+def release_instance_lock():
+    """Remove the instance lock file if present."""
+
+    global _INSTANCE_LOCK
+
+    if _INSTANCE_LOCK and _INSTANCE_LOCK.exists():
+        try:
+            _INSTANCE_LOCK.unlink()
+            logger.info("Instance lock released")
+        except Exception as exc:  # pragma: no cover - best-effort cleanup
+            logger.warning("Could not remove instance lock: %s", exc)
+    _INSTANCE_LOCK = None
+
+
+# Ensure the lock is released on exit
+atexit.register(release_instance_lock)
+
+
+# ============================================================================
 # CONFIGURATION VALIDATION
 # ============================================================================
 
@@ -183,6 +245,9 @@ try:
 except ValueError as e:
     logger.critical(f"Configuration error: {e}")
     sys.exit(1)
+
+# Prevent concurrent bot instances
+acquire_instance_lock()
 
 
 # ============================================================================
@@ -1400,7 +1465,9 @@ async def main():
         if monitor_task:
             monitor_task.cancel()
         logger.info("✓ Bot stopped")
-        
+
+        release_instance_lock()
+
         logger.info("Shutdown complete")
 
 
