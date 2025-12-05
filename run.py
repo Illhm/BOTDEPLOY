@@ -220,6 +220,11 @@ class DependencyManager:
         'weakref', 'webbrowser', 'winreg', 'winsound', 'wsgiref', 'xdrlib', 'xml', 'xmlrpc',
         'zipapp', 'zipfile', 'zipimport', 'zlib', '_thread'
     }
+
+    # Map commonly-misnamed imports to their PyPI package equivalents
+    PACKAGE_ALIASES = {
+        "pil": "Pillow",
+    }
     
     @staticmethod
     def extract_imports(script_path: Path) -> Set[str]:
@@ -253,10 +258,28 @@ class DependencyManager:
             
             logger.debug(f"Found imports: {external_imports}")
             return external_imports
-            
+
         except Exception as e:
             logger.error(f"Error extracting imports: {e}")
             return set()
+
+    @classmethod
+    def resolve_packages(cls, imports: Set[str]) -> List[str]:
+        """Map detected imports to installable package names."""
+
+        resolved = []
+        seen: Set[str] = set()
+
+        for module in sorted(imports):
+            package_name = cls.PACKAGE_ALIASES.get(module.lower(), module)
+
+            if package_name in seen:
+                continue
+
+            seen.add(package_name)
+            resolved.append(package_name)
+
+        return resolved
     
     @staticmethod
     def create_venv(venv_path: Path) -> bool:
@@ -556,13 +579,14 @@ class ProcessManager:
             elif auto_install:
                 messages.append("🔍 Detecting dependencies...")
                 imports = self._dependency_manager.extract_imports(script_path)
-                
-                if imports:
-                    messages.append(f"📦 Found packages: {', '.join(imports)}")
+                packages = self._dependency_manager.resolve_packages(imports)
+
+                if packages:
+                    messages.append(f"📦 Found packages: {', '.join(packages)}")
                     messages.append("⏳ Installing packages...")
-                    
-                    success, output = self._dependency_manager.install_packages(venv_path, list(imports))
-                    
+
+                    success, output = self._dependency_manager.install_packages(venv_path, packages)
+
                     if success:
                         messages.append("✅ Dependencies installed successfully")
                     else:
