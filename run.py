@@ -531,6 +531,503 @@ class ProcessInfo:
             # Optionally remove venv (configurable)
             if getattr(config, 'CLEANUP_VENV', False) and self.venv_path:
                 if self.venv_path.exists():
+             class EnvConfig:  # pragma: no cover - simple container for env vars
+        pass
+
+    config = EnvConfig()  # type: ignore
+
+# Override config values with environment variables when provided
+def _load_env_overrides():
+    """Load configuration values from environment variables when present."""
+
+    env_mapping = {
+        "BOT_TOKEN": "BOT_TOKEN",
+        "ALLOWED_USERS": "ALLOWED_USERS",
+        "SHUTDOWN_TOKEN": "SHUTDOWN_TOKEN",
+        "FLASK_PORT": "PORT",  # Common PaaS convention
+        "FLASK_HOST": "FLASK_HOST",
+        "MAX_PROCESSES": "MAX_PROCESSES",
+        "MONITOR_INTERVAL": "MONITOR_INTERVAL",
+        "PROCESS_TIMEOUT": "PROCESS_TIMEOUT",
+        "MAX_RESTART_ATTEMPTS": "MAX_RESTART_ATTEMPTS",
+        "TEMP_DIR": "TEMP_DIR",
+        "LOG_DIR": "LOG_DIR",
+        "MAX_LOG_SIZE": "MAX_LOG_SIZE",
+        "LOG_BACKUP_COUNT": "LOG_BACKUP_COUNT",
+        "USE_VENV": "USE_VENV",
+        "AUTO_INSTALL_DEPS": "AUTO_INSTALL_DEPS",
+        "VENV_DIR": "VENV_DIR",
+        "CLEANUP_VENV": "CLEANUP_VENV",
+    }
+
+    int_fields = {"FLASK_PORT", "MAX_PROCESSES", "MONITOR_INTERVAL", "PROCESS_TIMEOUT", "MAX_RESTART_ATTEMPTS"}
+
+    for attr_name, env_name in env_mapping.items():
+        env_value = os.getenv(env_name)
+        if env_value is None:
+            continue
+
+        # Simple parsing for list/integer/boolean values
+        if attr_name == "ALLOWED_USERS":
+            try:
+                parsed_users = [int(user.strip()) for user in env_value.split(",") if user.strip()]
+                setattr(config, attr_name, parsed_users)
+            except ValueError:
+                logger.warning("Invalid ALLOWED_USERS env format, expected comma-separated integers")
+            continue
+
+        if env_value.lower() in {"true", "false"}:
+            setattr(config, attr_name, env_value.lower() == "true")
+            continue
+
+        if attr_name in int_fields:
+            try:
+                setattr(config, attr_name, int(str(env_value).strip()))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid integer value for %s from environment (%s); using default", attr_name, env_value
+                )
+            continue
+
+        setattr(config, attr_name, env_value)
+
+
+# ============================================================================
+# LOGGING SETUP
+# ============================================================================
+
+def setup_logging():
+    """Configure logging with rotating file handler and console output"""
+    log_dir = Path(getattr(config, 'LOG_DIR', './logs'))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_format = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(log_format)
+    console_handler.setLevel(logging.INFO)
+    
+    # File handler with rotation
+    max_log_size = getattr(config, 'MAX_LOG_SIZE', 10 * 1024 * 1024)
+    log_backup_count = getattr(config, 'LOG_BACKUP_COUNT', 5)
+    
+    file_handler = RotatingFileHandler(
+        log_dir / "bot.log",
+        maxBytes=max_log_size,
+        backupCount=log_backup_count
+    )
+    file_handler.setFormatter(log_format)
+    file_handler.setLevel(logging.DEBUG)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+    
+    return logging.getLogger(__name__)
+
+
+logger = setup_logging()
+
+# Apply environment variable overrides after logger is ready
+_load_env_overrides()
+
+
+# ============================================================================
+# INSTANCE LOCK
+# ============================================================================
+
+_INSTANCE_LOCK: Optional[Path] = None
+
+
+def acquire_instance_lock():
+    """Prevent multiple bot instances from running concurrently."""
+
+    global _INSTANCE_LOCK
+
+    lock_path = Path(getattr(config, "LOCK_FILE", "/tmp/botdeploy.lock"))
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if lock_path.exists():
+        existing_pid: Optional[int] = None
+        try:
+            existing_pid = int(lock_path.read_text().strip())
+            if existing_pid and existing_pid != os.getpid():
+                # Check if process is still alive
+                os.kill(existing_pid, 0)
+                logger.critical(
+                    "Another bot instance is already running (PID: %s). Exiting to avoid Telegram getUpdates conflict.",
+                    existing_pid,
+                )
+                sys.exit(1)
+        except ProcessLookupError:
+            logger.warning("Stale lock file detected for PID %s; removing.", existing_pid)
+            lock_path.unlink(missing_ok=True)
+        except Exception as exc:  # pragma: no cover - safety net
+            logger.error("Failed to validate existing lock file: %s", exc)
+            lock_path.unlink(missing_ok=True)
+
+    try:
+        lock_path.write_text(str(os.getpid()))
+        _INSTANCE_LOCK = lock_path
+        logger.info("Instance lock acquired at %s", lock_path)
+    except Exception as exc:  # pragma: no cover - unlikely
+        logger.critical("Unable to create instance lock %s: %s", lock_path, exc)
+        sys.exit(1)
+
+
+def release_instance_lock():
+    """Remove the instance lock file if present."""
+
+    global _INSTANCE_LOCK
+
+    if _INSTANCE_LOCK and _INSTANCE_LOCK.exists():
+        try:
+            _INSTANCE_LOCK.unlink()
+            logger.info("Instance lock released")
+        except Exception as exc:  # pragma: no cover - best-effort cleanup
+            logger.warning("Could not remove instance lock: %s", exc)
+    _INSTANCE_LOCK = None
+
+
+# Ensure the lock is released on exit
+atexit.register(release_instance_lock)
+
+
+# ============================================================================
+# CONFIGURATION VALIDATION
+# ============================================================================
+
+def validate_config():
+    """Validate required configuration parameters"""
+    errors = []
+
+    # Required fields
+    required_fields = {
+        'BOT_TOKEN': 'Telegram Bot Token'
+    }
+    
+    for field, description in required_fields.items():
+        value = getattr(config, field, None)
+        if not value or str(value).startswith('YOUR_'):
+            errors.append(f"{description} ({field}) is not configured")
+    
+    if errors:
+        logger.error("Configuration validation failed:")
+        for error in errors:
+            logger.error(f"  - {error}")
+        logger.error("\nPlease edit config.py and provide valid credentials")
+        raise ValueError("Invalid configuration")
+    
+    # Create directories
+    temp_dir = Path(getattr(config, 'TEMP_DIR', '/tmp/botdeploy'))
+    log_dir = Path(getattr(config, 'LOG_DIR', './logs'))
+    venv_dir = Path(getattr(config, 'VENV_DIR', './venvs'))
+    
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    venv_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger.info("Configuration validated successfully")
+
+
+# Validate configuration at startup
+try:
+    validate_config()
+except ValueError as e:
+    logger.critical(f"Configuration error: {e}")
+    sys.exit(1)
+
+# Prevent concurrent bot instances
+acquire_instance_lock()
+
+
+# ============================================================================
+# DEPENDENCY MANAGER
+# ============================================================================
+
+class DependencyManager:
+    """Manage dependencies for deployed scripts"""
+    
+    # Standard library modules (no need to install)
+    STDLIB_MODULES = {
+        'abc', 'aifc', 'argparse', 'array', 'ast', 'asynchat', 'asyncio', 'asyncore',
+        'atexit', 'audioop', 'base64', 'bdb', 'binascii', 'binhex', 'bisect', 'builtins',
+        'bz2', 'calendar', 'cgi', 'cgitb', 'chunk', 'cmath', 'cmd', 'code', 'codecs',
+        'codeop', 'collections', 'colorsys', 'compileall', 'concurrent', 'configparser',
+        'contextlib', 'copy', 'copyreg', 'cProfile', 'crypt', 'csv', 'ctypes', 'curses',
+        'dataclasses', 'datetime', 'dbm', 'decimal', 'difflib', 'dis', 'distutils', 'doctest',
+        'email', 'encodings', 'enum', 'errno', 'faulthandler', 'fcntl', 'filecmp', 'fileinput',
+        'fnmatch', 'formatter', 'fractions', 'ftplib', 'functools', 'gc', 'getopt', 'getpass',
+        'gettext', 'glob', 'grp', 'gzip', 'hashlib', 'heapq', 'hmac', 'html', 'http', 'imaplib',
+        'imghdr', 'imp', 'importlib', 'inspect', 'io', 'ipaddress', 'itertools', 'json', 'keyword',
+        'lib2to3', 'linecache', 'locale', 'logging', 'lzma', 'mailbox', 'mailcap', 'marshal',
+        'math', 'mimetypes', 'mmap', 'modulefinder', 'multiprocessing', 'netrc', 'nis', 'nntplib',
+        'numbers', 'operator', 'optparse', 'os', 'ossaudiodev', 'parser', 'pathlib', 'pdb',
+        'pickle', 'pickletools', 'pipes', 'pkgutil', 'platform', 'plistlib', 'poplib', 'posix',
+        'posixpath', 'pprint', 'profile', 'pstats', 'pty', 'pwd', 'py_compile', 'pyclbr', 'pydoc',
+        'queue', 'quopri', 'random', 're', 'readline', 'reprlib', 'resource', 'rlcompleter',
+        'runpy', 'sched', 'secrets', 'select', 'selectors', 'shelve', 'shlex', 'shutil', 'signal',
+        'site', 'smtpd', 'smtplib', 'sndhdr', 'socket', 'socketserver', 'spwd', 'sqlite3', 'ssl',
+        'stat', 'statistics', 'string', 'stringprep', 'struct', 'subprocess', 'sunau', 'symbol',
+        'symtable', 'sys', 'sysconfig', 'syslog', 'tabnanny', 'tarfile', 'telnetlib', 'tempfile',
+        'termios', 'test', 'textwrap', 'threading', 'time', 'timeit', 'tkinter', 'token',
+        'tokenize', 'trace', 'traceback', 'tracemalloc', 'tty', 'turtle', 'turtledemo', 'types',
+        'typing', 'unicodedata', 'unittest', 'urllib', 'uu', 'uuid', 'venv', 'warnings', 'wave',
+        'weakref', 'webbrowser', 'winreg', 'winsound', 'wsgiref', 'xdrlib', 'xml', 'xmlrpc',
+        'zipapp', 'zipfile', 'zipimport', 'zlib', '_thread'
+    }
+
+    # Map commonly-misnamed imports to their PyPI package equivalents
+    PACKAGE_ALIASES = {
+        "pil": "Pillow",
+    }
+    
+    @staticmethod
+    def extract_imports(script_path: Path) -> Set[str]:
+        """Extract all import statements from a Python script"""
+        imports = set()
+        
+        try:
+            with open(script_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            
+            # Parse AST
+            try:
+                tree = ast.parse(content)
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        for alias in node.names:
+                            imports.add(alias.name.split('.')[0])
+                    elif isinstance(node, ast.ImportFrom):
+                        if node.module:
+                            imports.add(node.module.split('.')[0])
+            except SyntaxError:
+                logger.warning(f"Syntax error in {script_path}, falling back to regex")
+                # Fallback to regex
+                import_pattern = r'^\s*(?:from\s+(\S+)|import\s+(\S+))'
+                for match in re.finditer(import_pattern, content, re.MULTILINE):
+                    module = match.group(1) or match.group(2)
+                    imports.add(module.split('.')[0].split(' ')[0])
+            
+            # Filter out standard library
+            external_imports = imports - DependencyManager.STDLIB_MODULES
+            
+            logger.debug(f"Found imports: {external_imports}")
+            return external_imports
+
+        except Exception as e:
+            logger.error(f"Error extracting imports: {e}")
+            return set()
+
+    @classmethod
+    def resolve_packages(cls, imports: Set[str]) -> List[str]:
+        """Map detected imports to installable package names."""
+
+        resolved = []
+        seen: Set[str] = set()
+
+        for module in sorted(imports):
+            package_name = cls.PACKAGE_ALIASES.get(module.lower(), module)
+
+            if package_name in seen:
+                continue
+
+            seen.add(package_name)
+            resolved.append(package_name)
+
+        return resolved
+    
+    @staticmethod
+    def create_venv(venv_path: Path) -> bool:
+        """Create a virtual environment"""
+        try:
+            logger.info(f"Creating virtual environment at {venv_path}")
+            venv.create(venv_path, with_pip=True, clear=True)
+            logger.info("Virtual environment created successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create venv: {e}")
+            return False
+    
+    @staticmethod
+    def install_packages(venv_path: Path, packages: List[str]) -> tuple[bool, str]:
+        """Install packages in virtual environment"""
+        if not packages:
+            return True, "No packages to install"
+        
+        pip_path = venv_path / "bin" / "pip"
+        if not pip_path.exists():
+            pip_path = venv_path / "Scripts" / "pip.exe"  # Windows
+        
+        if not pip_path.exists():
+            return False, "pip not found in venv"
+        
+        try:
+            logger.info(f"Installing packages: {packages}")
+            
+            # Install packages
+            cmd = [str(pip_path), "install", "--no-cache-dir"] + packages
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minutes timeout
+            )
+            
+            if result.returncode == 0:
+                logger.info("Packages installed successfully")
+                return True, result.stdout
+            else:
+                logger.error(f"Package installation failed: {result.stderr}")
+                return False, result.stderr
+                
+        except subprocess.TimeoutExpired:
+            return False, "Installation timeout (5 minutes)"
+        except Exception as e:
+            logger.error(f"Error installing packages: {e}")
+            return False, str(e)
+    
+    @staticmethod
+    def install_from_requirements(venv_path: Path, requirements_file: Path) -> tuple[bool, str]:
+        """Install packages from requirements.txt"""
+        pip_path = venv_path / "bin" / "pip"
+        if not pip_path.exists():
+            pip_path = venv_path / "Scripts" / "pip.exe"
+        
+        if not pip_path.exists():
+            return False, "pip not found in venv"
+        
+        try:
+            logger.info(f"Installing from requirements: {requirements_file}")
+            
+            cmd = [str(pip_path), "install", "--no-cache-dir", "-r", str(requirements_file)]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            
+            if result.returncode == 0:
+                logger.info("Requirements installed successfully")
+                return True, result.stdout
+            else:
+                logger.error(f"Requirements installation failed: {result.stderr}")
+                return False, result.stderr
+                
+        except subprocess.TimeoutExpired:
+            return False, "Installation timeout (5 minutes)"
+        except Exception as e:
+            logger.error(f"Error installing requirements: {e}")
+            return False, str(e)
+
+
+# ============================================================================
+# PROCESS INFORMATION
+# ============================================================================
+
+class ProcessInfo:
+    """Information about a running process"""
+    
+    def __init__(
+        self,
+        pid: int,
+        process: subprocess.Popen,
+        file_path: Path,
+        log_path: Path,
+        chat_id: int,
+        venv_path: Optional[Path] = None,
+        requirements_file: Optional[Path] = None,
+        max_restarts: Optional[int] = None,
+    ):
+        self.pid = pid
+        self.process = process
+        self.file_path = file_path
+        self.log_path = log_path
+        self.chat_id = chat_id
+        self.venv_path = venv_path
+        self.requirements_file = requirements_file
+        self.created_at = datetime.now()
+        self.restart_count = 0
+        self.max_restarts = max_restarts if max_restarts is not None else getattr(
+            config, 'MAX_RESTART_ATTEMPTS', 3
+        )
+        self._status = "running"
+        self.dependencies_installed = False
+    
+    @property
+    def status(self) -> str:
+        """Get current process status with emoji"""
+        if self._status == "stopped":
+            return "⏹️ Stopped"
+        
+        return_code = self.process.poll()
+        if return_code is None:
+            return "✅ Running"
+        elif return_code == 0:
+            self._status = "stopped"
+            return "✅ Completed"
+        else:
+            return f"❌ Failed (Exit Code: {return_code})"
+    
+    @property
+    def is_running(self) -> bool:
+        """Check if process is still running"""
+        return self.process.poll() is None
+    
+    @property
+    def runtime(self) -> str:
+        """Get human-readable runtime"""
+        delta = datetime.now() - self.created_at
+        hours, remainder = divmod(int(delta.total_seconds()), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours}h {minutes}m {seconds}s"
+    
+    def get_log_tail(self, lines: int = 50) -> str:
+        """Get last N lines from log file"""
+        try:
+            if not self.log_path.exists():
+                return "Log file not found"
+            
+            with open(self.log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                all_lines = f.readlines()
+                return ''.join(all_lines[-lines:])
+        except Exception as e:
+            logger.error(f"Error reading log file: {e}")
+            return f"Error reading log: {e}"
+    
+    def cleanup(self):
+        """Cleanup process resources"""
+        try:
+            if self.is_running:
+                logger.info(f"Terminating process {self.pid}")
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"Process {self.pid} did not terminate, killing")
+                    self.process.kill()
+                    self.process.wait()
+            
+            # Remove temporary script file
+            if self.file_path.exists():
+                self.file_path.unlink()
+                logger.debug(f"Removed script file: {self.file_path}")
+            
+            # Remove requirements file if exists
+            if self.requirements_file and self.requirements_file.exists():
+                self.requirements_file.unlink()
+                logger.debug(f"Removed requirements file: {self.requirements_file}")
+            
+            # Optionally remove venv (configurable)
+            if getattr(config, 'CLEANUP_VENV', False) and self.venv_path:
+                if self.venv_path.exists():
                     import shutil
                     shutil.rmtree(self.venv_path, ignore_errors=True)
                     logger.debug(f"Removed venv: {self.venv_path}")
