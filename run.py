@@ -605,6 +605,26 @@ class ProcessManager:
                 process_info.cleanup()
             self._processes.clear()
         logger.info("All processes cleaned up")
+
+    def _get_sanitized_env(self) -> Dict[str, str]:
+        """Create a sanitized environment dictionary for child processes."""
+        safe_env = os.environ.copy()
+
+        # Explicitly remove sensitive keys
+        sensitive_keys = {
+            'BOT_TOKEN', 'API_ID', 'API_HASH', 'SHUTDOWN_TOKEN',
+            'TELEGRAM_API_ID', 'TELEGRAM_API_HASH', 'TELEGRAM_BOT_TOKEN'
+        }
+        for key in sensitive_keys:
+            safe_env.pop(key, None)
+
+        # Heuristic removal of potential credentials
+        for key in list(safe_env.keys()):
+            upper_key = key.upper()
+            if any(x in upper_key for x in ["TOKEN", "SECRET", "PASSWORD", "CREDENTIAL"]):
+                safe_env.pop(key, None)
+
+        return safe_env
     
     async def setup_dependencies(self, script_path: Path, requirements_file: Optional[Path] = None) -> tuple[Optional[Path], str]:
         """Setup virtual environment and install dependencies"""
@@ -706,13 +726,14 @@ class ProcessManager:
                     python_path = venv_path / "Scripts" / "python.exe"
 
             log_path.parent.mkdir(parents=True, exist_ok=True)
+
             with open(log_path, "a") as log_file:
                 process = subprocess.Popen(
                     [str(python_path), str(script_path)],
                     stdout=log_file,
                     stderr=log_file,
                     cwd=script_path.parent,
-                    env=os.environ,
+                    env=self._get_sanitized_env(),
                 )
 
             return process
@@ -787,7 +808,7 @@ class ProcessManager:
                     [str(python_path), str(old_process.file_path)],
                     stdout=log_file,
                     stderr=log_file,
-                    env=os.environ,
+                    env=self._get_sanitized_env(),
                     cwd=old_process.file_path.parent
                 )
             
