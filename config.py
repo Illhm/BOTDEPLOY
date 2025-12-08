@@ -72,7 +72,7 @@ USE_VENV = True
 AUTO_INSTALL_DEPS = True
 
 # Directory for virtual environments
-VENV_DIR = "./venvs"
+VENV_DIR = "/app/venvs/"
 
 # Cleanup virtual environment after process stops
 # Set to False to keep venvs for debugging
