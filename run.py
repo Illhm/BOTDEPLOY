@@ -721,7 +721,7 @@ class ProcessManager:
         try:
             python_path = Path(sys.executable)
             if venv_path:
-                python_path = venv_path / "bin" / "python"
+                python_path = venv_path 
                 if not python_path.exists():
                     python_path = venv_path / "Scripts" / "python.exe"
 
