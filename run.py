@@ -605,7 +605,7 @@ class ProcessManager:
                 process_info.cleanup()
             self._processes.clear()
         logger.info("All processes cleaned up")
-    
+
     async def setup_dependencies(self, script_path: Path, requirements_file: Optional[Path] = None) -> tuple[Optional[Path], str]:
         """Setup virtual environment and install dependencies"""
         use_venv = getattr(config, 'USE_VENV', True)
@@ -705,14 +705,17 @@ class ProcessManager:
                 if not python_path.exists():
                     python_path = venv_path / "Scripts" / "python.exe"
 
+            # Resolve to absolute path to avoid issues when changing cwd
+            python_path = python_path.resolve()
+
             log_path.parent.mkdir(parents=True, exist_ok=True)
+
             with open(log_path, "a") as log_file:
                 process = subprocess.Popen(
                     [str(python_path), str(script_path)],
                     stdout=log_file,
                     stderr=log_file,
                     cwd=script_path.parent,
-                    env=os.environ,
                 )
 
             return process
@@ -787,7 +790,6 @@ class ProcessManager:
                     [str(python_path), str(old_process.file_path)],
                     stdout=log_file,
                     stderr=log_file,
-                    env=os.environ,
                     cwd=old_process.file_path.parent
                 )
             
