@@ -189,20 +189,6 @@ def release_instance_lock():
 
     global _INSTANCE_LOCK
 
-    # Logging during interpreter shutdown can hit closed streams (e.g., pytest's
-    # captured stdout). Remove any handlers that can no longer emit to avoid
-    # noisy "I/O operation on closed file" errors during cleanup.
-    def _remove_closed_handlers(logger_obj: logging.Logger):
-        for handler in list(logger_obj.handlers):
-            stream = getattr(handler, "stream", None)
-            if hasattr(stream, "closed") and stream.closed:
-                logger_obj.removeHandler(handler)
-
-        if logger_obj.propagate and logger_obj.parent:
-            _remove_closed_handlers(logger_obj.parent)
-
-    _remove_closed_handlers(logger)
-
     if _INSTANCE_LOCK and _INSTANCE_LOCK.exists():
         try:
             _INSTANCE_LOCK.unlink()
