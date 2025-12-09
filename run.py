@@ -148,6 +148,26 @@ _load_env_overrides()
 _INSTANCE_LOCK: Optional[Path] = None
 
 
+def _log_safe(level: int, message: str, *args, **kwargs) -> None:
+    """Log a message while skipping handlers whose streams are closed."""
+
+    closed_handlers: List[logging.Handler] = []
+
+    for handler in logger.handlers:
+        stream = getattr(handler, "stream", None)
+        if stream is not None and getattr(stream, "closed", False):
+            closed_handlers.append(handler)
+
+    for handler in closed_handlers:
+        logger.removeHandler(handler)
+
+    try:
+        logger.log(level, message, *args, **kwargs)
+    finally:
+        for handler in closed_handlers:
+            logger.addHandler(handler)
+
+
 def acquire_instance_lock():
     """Prevent multiple bot instances from running concurrently."""
 
@@ -192,9 +212,9 @@ def release_instance_lock():
     if _INSTANCE_LOCK and _INSTANCE_LOCK.exists():
         try:
             _INSTANCE_LOCK.unlink()
-            logger.info("Instance lock released")
+            _log_safe(logging.INFO, "Instance lock released")
         except Exception as exc:  # pragma: no cover - best-effort cleanup
-            logger.warning("Could not remove instance lock: %s", exc)
+            _log_safe(logging.WARNING, "Could not remove instance lock: %s", exc)
     _INSTANCE_LOCK = None
 
 
