@@ -361,6 +361,7 @@ class DependencyManager:
 
         resolved = []
         seen: Set[str] = set()
+        normalized_imports = {module.lower() for module in imports}
 
         for module in sorted(imports):
             package_name = cls.PACKAGE_ALIASES.get(module.lower(), module)
@@ -370,6 +371,10 @@ class DependencyManager:
 
             seen.add(package_name)
             resolved.append(package_name)
+
+        if "pyrogram" in normalized_imports and "tgcrypto" not in seen:
+            seen.add("tgcrypto")
+            resolved.append("tgcrypto")
 
         return resolved
     
