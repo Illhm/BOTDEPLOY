@@ -27,6 +27,7 @@ from pathlib import Path
 import requests
 from telebot.async_telebot import AsyncTeleBot
 from telebot import types as tele_types
+from telebot import util as tele_util
 from flask import Flask, request, jsonify
 from logging.handlers import RotatingFileHandler
 
@@ -166,6 +167,12 @@ def _log_safe(level: int, message: str, *args, **kwargs) -> None:
     finally:
         for handler in closed_handlers:
             logger.addHandler(handler)
+
+
+def _escape_markdown(text: str) -> str:
+    """Escape text for Telegram Markdown parsing."""
+
+    return tele_util.escape_markdown(str(text))
 
 
 def acquire_instance_lock():
@@ -771,6 +778,7 @@ class ProcessManager:
         
         # Get error log
         error_log = process_info.get_log_tail(50)
+        safe_log = _escape_markdown(error_log[-2500:])
         
         # Send notification
         if self._bot_client:
@@ -778,10 +786,10 @@ class ProcessManager:
                 f"⚠️ **Process Failure Alert**\n\n"
                 f"**PID:** `{process_info.pid}`\n"
                 f"**Exit Code:** `{return_code}`\n"
-                f"**File:** `{process_info.file_path.name}`\n"
+                f"**File:** `{_escape_markdown(process_info.file_path.name)}`\n"
                 f"**Runtime:** {process_info.runtime}\n\n"
                 f"**Last 50 lines of log:**\n"
-                f"```\n{error_log[-2500:]}\n```"
+                f"```\n{safe_log}\n```"
             )
             
             try:
@@ -871,7 +879,7 @@ class ProcessManager:
                 await self._bot_client.send_message(
                     old_process.chat_id,
                     f"❌ **Failed to restart process**\n\n"
-                    f"Error: `{str(e)}`"
+                    f"Error: `{_escape_markdown(str(e))}`"
                 )
 
 
@@ -1024,7 +1032,7 @@ async def _handle_deploy(message: tele_types.Message, file_path: Path, requireme
         file_path, requirements_file
     )
 
-    await _reply(message, dep_status)
+    await _reply(message, _escape_markdown(dep_status))
 
     process = process_manager.run_script(file_path, log_path, venv_path, message.chat.id)
 
@@ -1054,8 +1062,8 @@ async def _handle_deploy(message: tele_types.Message, file_path: Path, requireme
         (
             f"✅ **Deployment Started**\n\n"
             f"**PID:** `{process.pid}`\n"
-            f"**File:** `{file_path.name}`\n"
-            f"**Log:** `{log_path.name}`\n\n"
+            f"**File:** `{_escape_markdown(file_path.name)}`\n"
+            f"**Log:** `{_escape_markdown(log_path.name)}`\n\n"
             "Use `/status` to monitor progress"
         ),
     )
@@ -1116,7 +1124,7 @@ async def deploy_command(message: tele_types.Message):
         await _reply(
             message,
             "❌ **Download Failed**\n\n"
-            f"Error: `{str(e)}`"
+            f"Error: `{_escape_markdown(str(e))}`"
         )
         return
 
@@ -1215,10 +1223,10 @@ async def status_command(message: tele_types.Message):
         status_messages.append(
             f"PID: `{process.pid}`\n"
             f"Status: {'✅ Running' if process.is_running else '❌ Stopped'}\n"
-            f"File: {process.file_path.name}\n"
+            f"File: {_escape_markdown(process.file_path.name)}\n"
             f"Runtime: {process.runtime}\n"
             f"Restarts: {process.restart_count}/{process.max_restarts}\n"
-            f"Log: {process.log_path.name}\n"
+            f"Log: {_escape_markdown(process.log_path.name)}\n"
             "──────────────────────────────\n"
         )
 
@@ -1300,7 +1308,7 @@ async def log_command(message: tele_types.Message):
         await _reply(message, "❌ PID must be a number")
     except Exception as e:
         logger.error(f"Error in log command: {e}", exc_info=True)
-        await _reply(message, f"❌ An error occurred: `{str(e)}`")
+        await _reply(message, f"❌ An error occurred: `{_escape_markdown(str(e))}`")
 
 
 @bot.message_handler(commands=["stop"])
@@ -1343,9 +1351,9 @@ async def stop_command(message: tele_types.Message):
             (
                 f"✅ **Process Stopped**\n\n"
                 f"**PID:** `{pid}`\n"
-                f"**File:** `{process_info.file_path.name}`\n"
+                f"**File:** `{_escape_markdown(process_info.file_path.name)}`\n"
                 f"**Runtime:** {process_info.runtime}\n"
-                f"**Log:** `{process_info.log_path.name}`\n\n"
+                f"**Log:** `{_escape_markdown(process_info.log_path.name)}`\n\n"
                 "The log file has been preserved for review."
             ),
         )
@@ -1359,7 +1367,7 @@ async def stop_command(message: tele_types.Message):
         await _reply(message, "❌ PID must be a number")
     except Exception as e:
         logger.error(f"Error in stop command: {e}", exc_info=True)
-        await _reply(message, f"❌ An error occurred: `{str(e)}`")
+        await _reply(message, f"❌ An error occurred: `{_escape_markdown(str(e))}`")
 # ============================================================================
 # FLASK WEB SERVER
 # ============================================================================
