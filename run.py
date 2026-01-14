@@ -172,7 +172,12 @@ def _log_safe(level: int, message: str, *args, **kwargs) -> None:
 def _escape_markdown(text: str) -> str:
     """Escape text for Telegram Markdown parsing."""
 
-    return tele_util.escape_markdown(str(text))
+    text = str(text)
+    escape_fn = getattr(tele_util, "escape_markdown", None)
+    if callable(escape_fn):
+        return escape_fn(text)
+
+    return re.sub(r"([_*\\[`])", r"\\\1", text)
 
 
 def acquire_instance_lock():
