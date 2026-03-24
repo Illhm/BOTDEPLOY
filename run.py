@@ -994,7 +994,7 @@ async def _download_document(message: tele_types.Message, destination: Path) -> 
 
 
 # Global storage for pending deployments (waiting for requirements.txt)
-pending_deployments: Dict[int, dict] = {}
+pending_deployments: Dict[int, List[dict]] = {}
 
 
 @bot.message_handler(commands=["start"])
@@ -1165,7 +1165,7 @@ async def deploy_document(message: tele_types.Message):
 
     if message.document.file_name == "requirements.txt":
         user_id = message.from_user.id
-        if user_id not in pending_deployments:
+        if user_id not in pending_deployments or not pending_deployments[user_id]:
             await _reply(
                 message,
                 "⚠️ **No Pending Deployment**\n\n"
@@ -1177,7 +1177,10 @@ async def deploy_document(message: tele_types.Message):
         requirements_path = temp_dir / f"requirements_{datetime.now().timestamp()}.txt"
         await _download_document(message, requirements_path)
 
-        pending = pending_deployments.pop(user_id)
+        pending = pending_deployments[user_id].pop(-1)
+        if not pending_deployments[user_id]:
+            del pending_deployments[user_id]
+
         await _reply(
             message,
             "✅ **Requirements received!**\n\n"
@@ -1196,7 +1199,10 @@ async def deploy_document(message: tele_types.Message):
     await _download_document(message, script_path)
 
     user_id = message.from_user.id
-    pending_deployments[user_id] = {'file_path': script_path, 'timestamp': timestamp}
+    if user_id not in pending_deployments:
+        pending_deployments[user_id] = []
+
+    pending_deployments[user_id].append({'file_path': script_path, 'timestamp': timestamp})
 
     await _reply(
         message,
@@ -1208,8 +1214,18 @@ async def deploy_document(message: tele_types.Message):
 
     await asyncio.sleep(10)
 
+    still_pending = False
     if user_id in pending_deployments:
-        pending_deployments.pop(user_id)
+        for i, item in enumerate(pending_deployments[user_id]):
+            if item['timestamp'] == timestamp:
+                pending_deployments[user_id].pop(i)
+                still_pending = True
+                break
+
+        if not pending_deployments[user_id]:
+            del pending_deployments[user_id]
+
+    if still_pending:
         await _handle_deploy(message, script_path, None)
 
 
