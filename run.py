@@ -104,21 +104,21 @@ def setup_logging():
     """Configure logging with rotating file handler and console output"""
     log_dir = Path(getattr(config, 'LOG_DIR', './logs'))
     log_dir.mkdir(parents=True, exist_ok=True)
-    
+
     log_format = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    
+
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(log_format)
     console_handler.setLevel(logging.INFO)
-    
+
     # File handler with rotation
     max_log_size = getattr(config, 'MAX_LOG_SIZE', 10 * 1024 * 1024)
     log_backup_count = getattr(config, 'LOG_BACKUP_COUNT', 5)
-    
+
     file_handler = RotatingFileHandler(
         log_dir / "bot.log",
         maxBytes=max_log_size,
@@ -126,13 +126,13 @@ def setup_logging():
     )
     file_handler.setFormatter(log_format)
     file_handler.setLevel(logging.DEBUG)
-    
+
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
     root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
-    
+
     return logging.getLogger(__name__)
 
 
@@ -246,28 +246,28 @@ def validate_config():
     required_fields = {
         'BOT_TOKEN': 'Telegram Bot Token'
     }
-    
+
     for field, description in required_fields.items():
         value = getattr(config, field, None)
         if not value or str(value).startswith('YOUR_'):
             errors.append(f"{description} ({field}) is not configured")
-    
+
     if errors:
         logger.error("Configuration validation failed:")
         for error in errors:
             logger.error(f"  - {error}")
         logger.error("\nPlease edit config.py and provide valid credentials")
         raise ValueError("Invalid configuration")
-    
+
     # Create directories
     temp_dir = Path(getattr(config, 'TEMP_DIR', '/tmp/botdeploy'))
     log_dir = Path(getattr(config, 'LOG_DIR', './logs'))
     venv_dir = Path(getattr(config, 'VENV_DIR', './venvs'))
-    
+
     temp_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     venv_dir.mkdir(parents=True, exist_ok=True)
-    
+
     logger.info("Configuration validated successfully")
 
 
@@ -288,7 +288,7 @@ acquire_instance_lock()
 
 class DependencyManager:
     """Manage dependencies for deployed scripts"""
-    
+
     # Standard library modules (no need to install)
     STDLIB_MODULES = {
         'abc', 'aifc', 'argparse', 'array', 'ast', 'asynchat', 'asyncio', 'asyncore',
@@ -322,16 +322,16 @@ class DependencyManager:
     PACKAGE_ALIASES = {
         "pil": "Pillow",
     }
-    
+
     @staticmethod
     def extract_imports(script_path: Path) -> Set[str]:
         """Extract all import statements from a Python script"""
         imports = set()
-        
+
         try:
             with open(script_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            
+
             # Parse AST
             try:
                 tree = ast.parse(content)
@@ -349,10 +349,10 @@ class DependencyManager:
                 for match in re.finditer(import_pattern, content, re.MULTILINE):
                     module = match.group(1) or match.group(2)
                     imports.add(module.split('.')[0].split(' ')[0])
-            
+
             # Filter out standard library
             external_imports = imports - DependencyManager.STDLIB_MODULES
-            
+
             logger.debug(f"Found imports: {external_imports}")
             return external_imports
 
@@ -382,7 +382,7 @@ class DependencyManager:
             resolved.append("tgcrypto")
 
         return resolved
-    
+
     @staticmethod
     def create_venv(venv_path: Path) -> bool:
         """Create a virtual environment"""
@@ -394,23 +394,23 @@ class DependencyManager:
         except Exception as e:
             logger.error(f"Failed to create venv: {e}")
             return False
-    
+
     @staticmethod
     def install_packages(venv_path: Path, packages: List[str]) -> tuple[bool, str]:
         """Install packages in virtual environment"""
         if not packages:
             return True, "No packages to install"
-        
+
         pip_path = venv_path / "bin" / "pip"
         if not pip_path.exists():
             pip_path = venv_path / "Scripts" / "pip.exe"  # Windows
-        
+
         if not pip_path.exists():
             return False, "pip not found in venv"
-        
+
         try:
             logger.info(f"Installing packages: {packages}")
-            
+
             # Install packages
             cmd = [str(pip_path), "install", "--no-cache-dir"] + packages
             result = subprocess.run(
@@ -419,33 +419,33 @@ class DependencyManager:
                 text=True,
                 timeout=300  # 5 minutes timeout
             )
-            
+
             if result.returncode == 0:
                 logger.info("Packages installed successfully")
                 return True, result.stdout
             else:
                 logger.error(f"Package installation failed: {result.stderr}")
                 return False, result.stderr
-                
+
         except subprocess.TimeoutExpired:
             return False, "Installation timeout (5 minutes)"
         except Exception as e:
             logger.error(f"Error installing packages: {e}")
             return False, str(e)
-    
+
     @staticmethod
     def install_from_requirements(venv_path: Path, requirements_file: Path) -> tuple[bool, str]:
         """Install packages from requirements.txt"""
         pip_path = venv_path / "bin" / "pip"
         if not pip_path.exists():
             pip_path = venv_path / "Scripts" / "pip.exe"
-        
+
         if not pip_path.exists():
             return False, "pip not found in venv"
-        
+
         try:
             logger.info(f"Installing from requirements: {requirements_file}")
-            
+
             cmd = [str(pip_path), "install", "--no-cache-dir", "-r", str(requirements_file)]
             result = subprocess.run(
                 cmd,
@@ -453,14 +453,14 @@ class DependencyManager:
                 text=True,
                 timeout=300
             )
-            
+
             if result.returncode == 0:
                 logger.info("Requirements installed successfully")
                 return True, result.stdout
             else:
                 logger.error(f"Requirements installation failed: {result.stderr}")
                 return False, result.stderr
-                
+
         except subprocess.TimeoutExpired:
             return False, "Installation timeout (5 minutes)"
         except Exception as e:
@@ -474,7 +474,7 @@ class DependencyManager:
 
 class ProcessInfo:
     """Information about a running process"""
-    
+
     def __init__(
         self,
         pid: int,
@@ -500,13 +500,13 @@ class ProcessInfo:
         )
         self._status = "running"
         self.dependencies_installed = False
-    
+
     @property
     def status(self) -> str:
         """Get current process status with emoji"""
         if self._status == "stopped":
             return "⏹️ Stopped"
-        
+
         return_code = self.process.poll()
         if return_code is None:
             return "✅ Running"
@@ -515,12 +515,12 @@ class ProcessInfo:
             return "✅ Completed"
         else:
             return f"❌ Failed (Exit Code: {return_code})"
-    
+
     @property
     def is_running(self) -> bool:
         """Check if process is still running"""
         return self.process.poll() is None
-    
+
     @property
     def runtime(self) -> str:
         """Get human-readable runtime"""
@@ -528,20 +528,20 @@ class ProcessInfo:
         hours, remainder = divmod(int(delta.total_seconds()), 3600)
         minutes, seconds = divmod(remainder, 60)
         return f"{hours}h {minutes}m {seconds}s"
-    
+
     def get_log_tail(self, lines: int = 50) -> str:
         """Get last N lines from log file"""
         try:
             if not self.log_path.exists():
                 return "Log file not found"
-            
+
             with open(self.log_path, 'r', encoding='utf-8', errors='ignore') as f:
                 all_lines = f.readlines()
                 return ''.join(all_lines[-lines:])
         except Exception as e:
             logger.error(f"Error reading log file: {e}")
             return f"Error reading log: {e}"
-    
+
     def cleanup(self):
         """Cleanup process resources"""
         try:
@@ -554,26 +554,26 @@ class ProcessInfo:
                     logger.warning(f"Process {self.pid} did not terminate, killing")
                     self.process.kill()
                     self.process.wait()
-            
+
             # Remove temporary script file
             if self.file_path.exists():
                 self.file_path.unlink()
                 logger.debug(f"Removed script file: {self.file_path}")
-            
+
             # Remove requirements file if exists
             if self.requirements_file and self.requirements_file.exists():
                 self.requirements_file.unlink()
                 logger.debug(f"Removed requirements file: {self.requirements_file}")
-            
+
             # Optionally remove venv (configurable)
             if getattr(config, 'CLEANUP_VENV', False) and self.venv_path:
                 if self.venv_path.exists():
                     import shutil
                     shutil.rmtree(self.venv_path, ignore_errors=True)
                     logger.debug(f"Removed venv: {self.venv_path}")
-            
+
             logger.info(f"Cleaned up process {self.pid}")
-            
+
         except Exception as e:
             logger.error(f"Error cleaning up process {self.pid}: {e}")
 
@@ -584,34 +584,34 @@ class ProcessInfo:
 
 class ProcessManager:
     """Thread-safe manager for running processes"""
-    
+
     def __init__(self):
         self._processes: Dict[int, ProcessInfo] = {}
         self._lock = Lock()
         self._bot_client: Optional[AsyncTeleBot] = None
         self._max_processes = getattr(config, 'MAX_PROCESSES', 10)
         self._dependency_manager = DependencyManager()
-    
+
     def set_bot_client(self, client: AsyncTeleBot):
         """Set bot client for notifications"""
         self._bot_client = client
-    
+
     def add_process(self, process_info: ProcessInfo) -> bool:
         """Add process to registry"""
         with self._lock:
             if len(self._processes) >= self._max_processes:
                 logger.warning(f"Maximum process limit reached ({self._max_processes})")
                 return False
-            
+
             self._processes[process_info.pid] = process_info
             logger.info(f"Added process {process_info.pid} to registry")
             return True
-    
+
     def get_process(self, pid: int) -> Optional[ProcessInfo]:
         """Get process info by PID"""
         with self._lock:
             return self._processes.get(pid)
-    
+
     def remove_process(self, pid: int) -> Optional[ProcessInfo]:
         """Remove process from registry"""
         with self._lock:
@@ -619,12 +619,12 @@ class ProcessManager:
             if process_info:
                 logger.info(f"Removed process {pid} from registry")
             return process_info
-    
+
     def get_all_processes(self) -> Dict[int, ProcessInfo]:
         """Get all processes (thread-safe copy)"""
         with self._lock:
             return self._processes.copy()
-    
+
     def get_stats(self) -> dict:
         """Get process statistics"""
         processes = self.get_all_processes()
@@ -633,7 +633,7 @@ class ProcessManager:
             'running': sum(1 for p in processes.values() if p.is_running),
             'max': self._max_processes
         }
-    
+
     def cleanup_all(self):
         """Cleanup all processes"""
         logger.info("Cleaning up all processes...")
@@ -662,22 +662,22 @@ class ProcessManager:
                 safe_env.pop(key, None)
 
         return safe_env
-    
+
     async def setup_dependencies(self, script_path: Path, requirements_file: Optional[Path] = None) -> tuple[Optional[Path], str]:
         """Setup virtual environment and install dependencies"""
         use_venv = getattr(config, 'USE_VENV', True)
         auto_install = getattr(config, 'AUTO_INSTALL_DEPS', True)
-        
+
         if not use_venv and not auto_install:
             return None, "Dependency management disabled"
-        
+
         # Create venv directory
         venv_dir = Path(getattr(config, 'VENV_DIR', './venvs'))
         timestamp = datetime.now().timestamp()
         venv_path = venv_dir / f"venv_{timestamp}"
-        
+
         messages = []
-        
+
         try:
             # Create virtual environment
             if use_venv:
@@ -685,18 +685,18 @@ class ProcessManager:
                 if not self._dependency_manager.create_venv(venv_path):
                     return None, "Failed to create virtual environment"
                 messages.append("✅ Virtual environment created")
-            
+
             # Install from requirements.txt if provided
             if requirements_file and requirements_file.exists():
                 messages.append(f"📥 Installing from {requirements_file.name}...")
                 success, output = self._dependency_manager.install_from_requirements(venv_path, requirements_file)
-                
+
                 if success:
                     messages.append("✅ Requirements installed successfully")
                 else:
                     messages.append(f"⚠️ Requirements installation failed:\n{output[:500]}")
                     # Continue anyway, script might still work
-            
+
             # Auto-detect and install dependencies
             elif auto_install:
                 messages.append("🔍 Detecting dependencies...")
@@ -716,13 +716,13 @@ class ProcessManager:
                         messages.append("⚠️ Script will run with available packages")
                 else:
                     messages.append("ℹ️ No external dependencies detected")
-            
+
             return venv_path if use_venv else None, "\n".join(messages)
-            
+
         except Exception as e:
             logger.error(f"Error setting up dependencies: {e}")
             return None, f"❌ Dependency setup failed: {str(e)}"
-    
+
     async def monitor_processes(self):
         """Monitor all processes and handle failures"""
         monitor_interval = getattr(config, 'MONITOR_INTERVAL', 5)
@@ -780,16 +780,16 @@ class ProcessManager:
                 "Failed to start script %s for chat %s: %s", script_path, chat_id, exc, exc_info=True
             )
             return None
-    
+
     async def _handle_process_failure(self, process_info: ProcessInfo):
         """Handle process failure and attempt restart"""
         return_code = process_info.process.poll()
         logger.warning(f"Process {process_info.pid} failed with exit code {return_code}")
-        
+
         # Get error log
         error_log = process_info.get_log_tail(50)
         safe_log = _escape_markdown(error_log[-2500:])
-        
+
         # Send notification
         if self._bot_client:
             message = (
@@ -801,7 +801,7 @@ class ProcessManager:
                 f"**Last 50 lines of log:**\n"
                 f"```\n{safe_log}\n```"
             )
-            
+
             try:
                 await self._bot_client.send_message(
                     process_info.chat_id,
@@ -810,7 +810,7 @@ class ProcessManager:
                 )
             except Exception as e:
                 logger.error(f"Failed to send notification: {e}")
-        
+
         # Attempt restart if under limit
         if process_info.restart_count < process_info.max_restarts:
             await self._restart_process(process_info)
@@ -821,12 +821,12 @@ class ProcessManager:
             )
             self.remove_process(process_info.pid)
             process_info.cleanup()
-    
+
     async def _restart_process(self, old_process: ProcessInfo):
         """Restart a failed process"""
         try:
             logger.info(f"Attempting to restart process {old_process.pid}")
-            
+
             # Determine python executable
             if old_process.venv_path:
                 python_path = old_process.venv_path / "bin" / "python"
@@ -834,13 +834,13 @@ class ProcessManager:
                     python_path = old_process.venv_path / "Scripts" / "python.exe"
             else:
                 python_path = sys.executable
-            
+
             # Append restart marker to log
             with open(old_process.log_path, "a") as log_file:
                 log_file.write(f"\n\n{'='*60}\n")
                 log_file.write(f"RESTART #{old_process.restart_count + 1} at {datetime.now()}\n")
                 log_file.write(f"{'='*60}\n\n")
-                
+
                 # Start new process
                 new_process = subprocess.Popen(
                     [str(python_path), str(old_process.file_path)],
@@ -849,7 +849,7 @@ class ProcessManager:
                     env=self._get_sanitized_env(),
                     cwd=old_process.file_path.parent
                 )
-            
+
             # Create new process info
             new_process_info = ProcessInfo(
                 pid=new_process.pid,
@@ -862,11 +862,11 @@ class ProcessManager:
             )
             new_process_info.restart_count = old_process.restart_count + 1
             new_process_info.dependencies_installed = old_process.dependencies_installed
-            
+
             # Replace in registry
             self.remove_process(old_process.pid)
             self.add_process(new_process_info)
-            
+
             # Send notification
             if self._bot_client:
                 restart_message = (
@@ -880,9 +880,9 @@ class ProcessManager:
                     restart_message,
                     parse_mode="Markdown"
                 )
-            
+
             logger.info(f"Process restarted successfully: {new_process.pid}")
-            
+
         except Exception as e:
             logger.error(f"Failed to restart process: {e}", exc_info=True)
             if self._bot_client:
@@ -1423,7 +1423,7 @@ def home():
 def health():
     """Detailed health check"""
     stats = process_manager.get_stats()
-    
+
     return jsonify({
         "status": "healthy",
         "version": "2.1.0",
@@ -1436,7 +1436,7 @@ def health():
 def stats():
     """Process statistics endpoint"""
     processes = process_manager.get_all_processes()
-    
+
     process_list = []
     for pid, info in processes.items():
         process_list.append({
@@ -1449,7 +1449,7 @@ def stats():
             "has_venv": info.venv_path is not None,
             "has_requirements": info.requirements_file is not None
         })
-    
+
     return jsonify({
         "total": len(processes),
         "processes": process_list,
@@ -1461,26 +1461,26 @@ def stats():
 def shutdown():
     """Shutdown endpoint (protected)"""
     shutdown_token = getattr(config, 'SHUTDOWN_TOKEN', '')
-    
+
     if not shutdown_token:
         return jsonify({"error": "Shutdown endpoint not configured"}), 403
-    
+
     token = request.headers.get('Authorization', '').replace('Bearer ', '')
-    
+
     if token != shutdown_token:
         logger.warning("Unauthorized shutdown attempt")
         return jsonify({"error": "Unauthorized"}), 401
-    
+
     logger.warning("Shutdown requested via API")
-    
+
     # Cleanup all processes
     process_manager.cleanup_all()
-    
+
     # Shutdown Flask
     func = request.environ.get('werkzeug.server.shutdown')
     if func:
         func()
-    
+
     return jsonify({"status": "shutting down"})
 
 
@@ -1488,7 +1488,7 @@ def run_flask():
     """Run Flask server in thread"""
     flask_host = getattr(config, 'FLASK_HOST', '0.0.0.0')
     flask_port = getattr(config, 'FLASK_PORT', 5000)
-    
+
     logger.info(f"Starting Flask server on {flask_host}:{flask_port}")
     web_app.run(
         host=flask_host,
@@ -1515,7 +1515,7 @@ async def main():
         flask_thread = Thread(target=run_flask, daemon=True)
         flask_thread.start()
         logger.info("✓ Flask server started")
-        
+
         # Start process monitor
         monitor_task = asyncio.create_task(process_manager.monitor_processes())
         logger.info("✓ Process monitor started")
@@ -1526,17 +1526,17 @@ async def main():
 
         # Start bot polling
         await bot.infinity_polling()
-        
+
     except KeyboardInterrupt:
         logger.info("Shutdown requested by user")
     except Exception as e:
         logger.critical(f"Fatal error: {e}", exc_info=True)
     finally:
         logger.info("Shutting down...")
-        
+
         # Cleanup
         process_manager.cleanup_all()
-        
+
         if monitor_task:
             monitor_task.cancel()
         logger.info("✓ Bot stopped")
