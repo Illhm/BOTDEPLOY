@@ -72,7 +72,7 @@ else:
 ALLOWED_USERS_RAW = config.get("ALLOWED_USERS", "")
 
 # Initialize Bot (Synchronous for Serverless)
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown", threaded=False)
 
 # Initialize Flask
 app = Flask(__name__)
