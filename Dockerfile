@@ -1,13 +1,8 @@
 # ============================================================================
-# Bot Deploy Manager v2.0 - Production Dockerfile
+# Bot Deploy Manager v2.0 - Modal Compatible
 # ============================================================================
 
 FROM python:3.11-slim
-
-# Metadata
-LABEL maintainer="Bot Deploy Manager Team"
-LABEL version="2.0.0"
-LABEL description="Telegram bot for Python script deployment and management"
 
 # Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -21,37 +16,33 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
         ca-certificates && \
-    # Cleanup
     apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/* && \
-    # Create non-root user for security
-    useradd -m -u 1000 botuser && \
-    # Create directories
-    mkdir -p /app/logs /app/temp && \
-    chown -R botuser:botuser /app
+    rm -rf /var/lib/apt/lists/*
+
+# Setup user and directories
+RUN useradd -m -u 1000 botuser && \
+    mkdir -p /app/logs /app/temp
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first (for better caching)
+# Copy requirements & install
 COPY requirements.txt .
-COPY config.py .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
-COPY --chown=botuser:botuser run.py .
-COPY --chown=botuser:botuser config.py.example .
+# --- PERUBAHAN DI SINI ---
+# Salin file tanpa flag --chown (karena Modal tidak mendukungnya)
+COPY config.py .
+COPY run.py .
+COPY config.py.example .
 
-# Switch to non-root user
+# Jalankan chown secara manual untuk seluruh direktori kerja
+RUN chown -R botuser:botuser /app
+
+# Pindah ke user non-root
 USER botuser
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${FLASK_PORT:-5000}/health || exit 1
-
-# Expose port
+# Expose port (opsional di Modal, tapi baik untuk dokumentasi)
 EXPOSE 5000
 
 # Run application

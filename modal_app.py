@@ -13,7 +13,7 @@ image = modal.Image.from_dockerfile("Dockerfile")
 @app.function(
     image=image,
     secrets=[modal.Secret.from_name("botdeploy-secrets")],
-    keep_warm=1, # Keep one instance warm to avoid cold starts for the bot
+    min_containers=1, # Keep one instance warm to avoid cold starts for the bot
 )
 @modal.web_server(port=5000, startup_timeout=60)
 def run_bot():
