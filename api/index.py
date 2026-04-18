@@ -58,9 +58,9 @@ BOT_TOKEN = config.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is not configured in environment variables or config.py")
 
-TEMP_DIR = Path(config.get('TEMP_DIR', '/tmp/botdeploy'))
-LOG_DIR = Path(config.get('LOG_DIR', '/tmp/logs'))
-VENV_DIR = Path(config.get('VENV_DIR', '/tmp/venvs'))
+TEMP_DIR = Path('/tmp/botdeploy')
+LOG_DIR = Path('/tmp/logs')
+VENV_DIR = Path('/tmp/venvs')
 ALLOWED_USERS_RAW = config.get("ALLOWED_USERS", "")
 
 # Initialize Bot (Synchronous for Serverless)
